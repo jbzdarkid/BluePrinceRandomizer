@@ -1,0 +1,285 @@
+#include "pch.h"
+#include "Memory.h"
+#include <psapi.h>
+#include <tlhelp32.h>
+
+Memory::Memory(const std::wstring& processName) : _processName(processName) {
+    // First, get the handle and PID of the process
+    DWORD pid = 0;
+    PROCESSENTRY32W entry;
+    entry.dwSize = sizeof(entry);
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    while (Process32NextW(snapshot, &entry)) {
+        if (_processName == entry.szExeFile) {
+            pid = entry.th32ProcessID;
+            _handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+            break;
+        }
+    }
+    assert(_handle);
+
+    std::tie(_baseAddress, _endOfModule) = DebugUtils::GetModuleBounds(_handle);
+    assert(_baseAddress);
+
+    struct Data {
+        DWORD pid;
+        HWND* hwnd;
+    };
+    Data data = Data{pid, &_hwnd};
+
+    EnumWindows([](HWND hwnd, LPARAM data) {
+        DWORD pid;
+        GetWindowThreadProcessId(hwnd, &pid);
+        DWORD targetPid = reinterpret_cast<Data*>(data)->pid;
+        if (pid == targetPid) {
+            Data* d = reinterpret_cast<Data*>(data);
+            *(d->hwnd) = hwnd;
+            return FALSE; // Stop enumerating
+        }
+        return TRUE; // Continue enumerating
+        }, (LPARAM)&data);
+}
+
+Memory::~Memory() {
+    if (_handle != nullptr) {
+        CloseHandle(_handle);
+    }
+}
+
+void Memory::BringToFront() {
+    ShowWindow(_hwnd, SW_RESTORE); // This handles fullscreen mode
+    SetForegroundWindow(_hwnd); // This handles windowed mode
+}
+
+bool Memory::IsForeground() {
+    return GetForegroundWindow() == _hwnd;
+}
+
+__int64 Memory::ReadStaticInt(__int64 offset, int index, const std::vector<byte>& data, size_t bytesToEOL) {
+    // (address of next line) + (index interpreted as 4byte int)
+    return offset + index + bytesToEOL + *(int*)&data[index];
+}
+
+// Small wrapper for non-failing scan functions
+void Memory::AddSigScan(const std::vector<byte>& scanBytes, const ScanFunc& scanFunc) {
+    _sigScans.emplace_back(SigScan{false, scanBytes, [scanFunc](__int64 offset, int index, const std::vector<byte>& data) {
+        scanFunc(offset, index, data);
+        return true;
+    }});
+}
+
+void Memory::AddSigScan2(const std::vector<byte>& scanBytes, const ScanFunc2& scanFunc) {
+    _sigScans.emplace_back(SigScan{false, scanBytes, scanFunc});
+}
+
+int find(const std::vector<byte>& data, const std::vector<byte>& search) {
+    const byte* dataBegin = &data[0];
+    const byte* searchBegin = &search[0];
+    size_t maxI = data.size() - search.size();
+    size_t maxJ = search.size();
+
+    for (int i=0; i<maxI; i++) {
+        bool match = true;
+        for (size_t j=0; j<maxJ; j++) {
+            if (*(dataBegin + i + j) == *(searchBegin + j)) {
+                continue;
+            }
+            match = false;
+            break;
+        }
+        if (match) return i;
+    }
+    return -1;
+}
+
+#define BUFFER_SIZE 0x10000 // 10 KB
+size_t Memory::ExecuteSigScans() {
+    size_t notFound = 0;
+    for (const auto& sigScan : _sigScans) if (!sigScan.found) notFound++;
+    std::vector<byte> buff;
+    buff.resize(BUFFER_SIZE + 0x100); // padding in case the sigscan is past the end of the buffer
+
+    for (uintptr_t i = _baseAddress; i < _endOfModule; i += BUFFER_SIZE) {
+        SIZE_T numBytesWritten;
+        if (!ReadProcessMemory(_handle, reinterpret_cast<void*>(i), &buff[0], buff.size(), &numBytesWritten)) continue;
+        buff.resize(numBytesWritten);
+        for (auto& sigScan : _sigScans) {
+            if (sigScan.found) continue;
+            int index = find(buff, sigScan.bytes);
+            if (index == -1) continue;
+            sigScan.found = sigScan.scanFunc(i - _baseAddress, index, buff); // We're expecting i to be relative to the base address here.
+            if (sigScan.found) notFound--;
+        }
+        if (notFound == 0) break;
+    }
+
+    assert(notFound == 0);
+
+    _sigScans.clear();
+    return notFound;
+}
+
+// Technically this is ReadChar*, but this name makes more sense with the return type.
+std::string Memory::ReadString(const std::vector<__int64>& offsets) {
+    __int64 charAddr = ReadData<__int64>(offsets, 1)[0];
+    if (charAddr == 0) return ""; // Handle nullptr for strings
+
+    std::vector<char> tmp;
+    auto nullTerminator = tmp.begin(); // Value is only for type information.
+    for (size_t maxLength = (1 << 6); maxLength < (1 << 10); maxLength *= 2) {
+        tmp = ReadAbsoluteData<char>({charAddr}, maxLength);
+        nullTerminator = std::find(tmp.begin(), tmp.end(), '\0');
+        // If a null terminator is found, we will strip any trailing data after it.
+        if (nullTerminator != tmp.end()) break;
+    }
+    return std::string(tmp.begin(), nullTerminator);
+}
+
+int32_t Memory::CallFunction(int64_t relativeAddress,
+    const int64_t rcx, const int64_t rdx, const int64_t r8, const int64_t r9,
+    const float xmm0, const float xmm1, const float xmm2, const float xmm3) {
+    struct Arguments {
+        uintptr_t address;
+        int64_t rcx;
+        int64_t rdx;
+        int64_t r8;
+        int64_t r9;
+        float xmm0;
+        float xmm1;
+        float xmm2;
+        float xmm3;
+    };
+    assert((uint64_t)relativeAddress < _baseAddress);
+    Arguments args = {
+        ComputeOffset({relativeAddress}),
+        rcx, rdx, r8, r9,
+        xmm0, xmm1, xmm2, xmm3,
+    };
+
+#define INSTRUCTION_SIZE 57
+
+    if (!_functionPrimitive) {
+        // Some C++ macro magic to look up the member offset of a given field.
+        // For example, args.rcx is 8 bits from the start of the struct, so this would result in 0x08.
+        #define OFFSET_OF(field) \
+            static_cast<uint8_t>(((uint64_t)&args.##field - (uint64_t)&args.address) & 0x00000000000000FF)
+
+        // This primitive contains both a series of instructions and a buffer for arguments.
+        // This allows us to write the instructions once, and then just write our new arguments
+        // whenever we need to make another call.
+	    const uint8_t instructions[] = {
+            0x48, 0xBB,                                 // mov rbx,  0 ; 0 will be replaced by the address of the arguments struct
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x48, 0x8B, 0x4B, OFFSET_OF(rcx),           // mov rcx,  args.rcx
+            0x48, 0x8B, 0x53, OFFSET_OF(rdx),           // mov rdx,  args.rdx
+            0x4C, 0x8B, 0x43, OFFSET_OF(r8),            // mov r8,   args.r8
+            0x4C, 0x8B, 0x4B, OFFSET_OF(r9),            // mov r9,   args.r9
+            0xF3, 0x0F, 0x7E, 0x43, OFFSET_OF(xmm0),    // mov xmm0, args.xmm0
+            0xF3, 0x0F, 0x7E, 0x4B, OFFSET_OF(xmm1),    // mov xmm1, args.xmm1
+            0xF3, 0x0F, 0x7E, 0x53, OFFSET_OF(xmm2),    // mov xmm2, args.xmm2
+            0xF3, 0x0F, 0x7E, 0x5B, OFFSET_OF(xmm3),    // mov xmm3, args.xmm3
+            0x48, 0x83, 0xEC, 0x48,                     // sub rsp,48 ; align the stack pointer for movss opcodes
+            0xFF, 0x13,                                 // call [rbx]
+            0x48, 0x83, 0xC4, 0x48,                     // add rsp,48
+            0xC3,                                       // ret
+        };
+        static_assert(sizeof(instructions) == INSTRUCTION_SIZE, "The instruction size is required to be static for argument writing purposes.");
+
+        // Allocate space for the instructions and arguments buffer,
+        _functionPrimitive = AllocateArray(sizeof(instructions) + sizeof(Arguments));
+        // Then update the instructions to load from the arguments buffer (assuming LE),
+        *(uint64_t*)&instructions[2] = (_functionPrimitive + sizeof(instructions));
+        // and finally write the completed instructions into the target process.
+        WriteDataInternal(instructions, _functionPrimitive, sizeof(instructions));
+    }
+
+    // Then, we can write the arguments into the buffer, to be copied by the instructions.
+    WriteDataInternal(&args, _functionPrimitive + INSTRUCTION_SIZE, sizeof(args));
+
+    // Although I don't use it here, argument 5 (lpParameter) can be used to pass a single 8-byte integer to the target process.
+    // Note that you cannot transfer data this way; if you pass a pointer it will point to memory in this process, not the target.
+    HANDLE thread = CreateRemoteThread(_handle, NULL, 0, (LPTHREAD_START_ROUTINE)_functionPrimitive, 0, 0, 0);
+	DWORD result = WaitForSingleObject(thread, INFINITE);
+
+    // This will be the return value of the called function.
+    int32_t exitCode = 0;
+    static_assert(sizeof(DWORD) == sizeof(exitCode));
+    GetExitCodeThread(thread, reinterpret_cast<LPDWORD>(&exitCode));
+    return exitCode;
+}
+
+int32_t Memory::CallFunction(__int64 address, const std::string& str, __int64 rdx) {
+    uintptr_t addr = AllocateArray(str.size());
+    WriteDataInternal(&str[0], addr, str.size());
+    return CallFunction(address, addr, rdx, 0, 0);
+}
+
+void Memory::ReadDataInternal(void* buffer, uintptr_t computedOffset, size_t bufferSize) {
+    assert(bufferSize > 0);
+    if (!_handle) return;
+    // Ensure that the buffer size does not cause a read across a page boundary.
+    if (bufferSize > 0x1000 - (computedOffset & 0x0000FFF)) {
+        bufferSize = 0x1000 - (computedOffset & 0x0000FFF);
+    }
+    if (!ReadProcessMemory(_handle, (void*)computedOffset, buffer, bufferSize, nullptr)) {
+        assert(false);
+    }
+}
+
+void Memory::WriteDataInternal(const void* buffer, uintptr_t computedOffset, size_t bufferSize) {
+    assert(bufferSize > 0);
+    if (!_handle) return;
+    if (bufferSize > 0x1000 - (computedOffset & 0x0000FFF)) {
+        bufferSize = 0x1000 - (computedOffset & 0x0000FFF);
+    }
+    if (!WriteProcessMemory(_handle, (void*)computedOffset, buffer, bufferSize, nullptr)) {
+        assert(false);
+    }
+}
+
+uintptr_t Memory::ComputeOffset(std::vector<__int64> offsets, bool absolute) {
+    assert(offsets.size() > 0);
+    assert(offsets.front() != 0);
+
+    // Leave off the last offset, since it will be either read/write, and may not be of type uintptr_t.
+    const __int64 final_offset = offsets.back();
+    offsets.pop_back();
+
+    uintptr_t cumulativeAddress = (absolute ? 0 : _baseAddress);
+    for (const __int64 offset : offsets) {
+        cumulativeAddress += offset;
+
+        // If the address was already computed, continue to the next offset.
+        uintptr_t foundAddress = _computedAddresses.Find(cumulativeAddress);
+        if (foundAddress != 0) {
+            cumulativeAddress = foundAddress;
+            continue;
+        }
+
+        // If the address was not yet computed, read it from memory.
+        uintptr_t computedAddress = 0;
+        if (!_handle) return 0;
+        if (ReadProcessMemory(_handle, reinterpret_cast<LPCVOID>(cumulativeAddress), &computedAddress, sizeof(computedAddress), NULL) && computedAddress != 0) {
+            // Success!
+            _computedAddresses.Set(cumulativeAddress, computedAddress);
+            cumulativeAddress = computedAddress;
+            continue;
+        }
+
+        MEMORY_BASIC_INFORMATION info;
+        assert(computedAddress != 0);
+        if (!VirtualQuery(reinterpret_cast<LPVOID>(cumulativeAddress), &info, sizeof(info))) {
+            assert(false);
+        } else {
+            assert(info.State == MEM_COMMIT);
+            assert(info.AllocationProtect & 0xC4);
+            assert(false);
+        }
+        return 0;
+    }
+    return cumulativeAddress + final_offset;
+}
+
+uintptr_t Memory::AllocateArray(__int64 size) {
+    return (uintptr_t)VirtualAllocEx(_handle, 0, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+}

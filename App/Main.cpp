@@ -1,0 +1,226 @@
+#include "pch.h"
+#include "Richedit.h"
+#include "Version.h"
+#include "shellapi.h"
+#include "Shlobj.h"
+
+#include "Trainer.h"
+
+#include <unordered_set>
+
+#define SET_SEED            0x401
+
+// Globals
+HWND g_hwnd;
+HINSTANCE g_hInstance;
+std::shared_ptr<Memory> g_bluePrince;
+std::shared_ptr<Trainer> g_trainer;
+
+#define SetWindowTextA(...) static_assert(false, "Call SetStringText instead of SetWindowTextA");
+#define SetWindowTextW(...) static_assert(false, "Call SetStringText instead of SetWindowTextW");
+#undef SetWindowText
+#define SetWindowText(...) static_assert(false, "Call SetStringText instead of SetWindowText");
+
+void SetStringText(HWND hwnd, const std::string& text) {
+    static std::unordered_map<HWND, std::string> hwndText;
+    auto search = hwndText.find(hwnd);
+    if (search != hwndText.end()) {
+        if (search->second == text) return;
+        search->second = text;
+    } else {
+        hwndText[hwnd] = text;
+    }
+
+#pragma push_macro("SetWindowTextA")
+#undef SetWindowTextA
+    SetWindowTextA(hwnd, text.c_str());
+#pragma pop_macro("SetWindowTextA")
+}
+
+void SetStringText(HWND hwnd, const std::wstring& text) {
+    static std::unordered_map<HWND, std::wstring> hwndText;
+    auto search = hwndText.find(hwnd);
+    if (search != hwndText.end()) {
+        if (search->second == text) return;
+        search->second = text;
+    } else {
+        hwndText[hwnd] = text;
+    }
+
+#pragma push_macro("SetWindowTextW")
+#undef SetWindowTextW
+    SetWindowTextW(hwnd, text.c_str());
+#pragma pop_macro("SetWindowTextW")
+}
+
+std::wstring GetWindowString(HWND hwnd) {
+    SetLastError(0); // GetWindowTextLength does not clear LastError.
+    int length = GetWindowTextLengthW(hwnd);
+    std::wstring text(length, L'\0');
+    length = GetWindowTextW(hwnd, text.data(), static_cast<int>(text.size() + 1)); // Length includes the null terminator
+    text.resize(length);
+    return text;
+}
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+        case WM_DESTROY:
+            if (g_trainer) {
+                auto trainer = g_trainer;
+                g_trainer = nullptr; // Close the trainer, which undoes any modifications to the game.
+
+                // Wait to actually quit until all background threads have finished their work.
+                // Note that we do need to pump messages here, since said work may require the message pump,
+                // which we are currently holding hostage.
+                while (trainer.use_count() > 1) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    MSG msg;
+                    if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&msg);
+                        DispatchMessage(&msg);
+                    }
+                }
+            }
+            PostQuitMessage(0);
+            return 0;
+        case WM_ERASEBKGND:
+        {
+            RECT rc;
+            ::GetClientRect(hwnd, &rc);
+            HBRUSH brush = CreateSolidBrush(RGB(255,255,255));
+            FillRect((HDC)wParam, &rc, brush);
+            DeleteObject(brush);
+            return TRUE;
+        }
+        case WM_CTLCOLORSTATIC:
+            // Get rid of the gross gray background. https://stackoverflow.com/a/4495814
+            SetTextColor((HDC)wParam, RGB(0, 0, 0));
+            SetBkColor((HDC)wParam, RGB(255, 255, 255));
+            SetBkMode((HDC)wParam, OPAQUE);
+            static HBRUSH s_solidBrush = CreateSolidBrush(RGB(255, 255, 255));
+            return (LRESULT)s_solidBrush;
+        case WM_COMMAND:
+            // All commands should execute on a background thread, to avoid hanging the UI.
+            std::thread t([trainer = g_trainer, wParam] {
+#pragma warning (suppress: 4101)
+                void* g_trainer; // Prevent access to the global variable in this scope
+#pragma warning (default: 4101)
+                if (!trainer) return;
+                SetCurrentThreadName(L"Command Helper");
+
+                WORD command = LOWORD(wParam);
+                if (command == SET_SEED) {
+                    // g_savedCameraPos = trainer->GetCameraPos();
+                    // g_savedCameraAng = trainer->GetCameraAng();
+                    // SetPosAndAngText(g_savedPos, g_savedCameraPos, g_savedCameraAng);
+                }
+            });
+            t.detach();
+            break;
+    }
+
+    return DefWindowProc(hwnd, message, wParam, lParam);
+}
+
+HWND CreateLabel(int x, int y, int width, int height, LPCWSTR text = L"", __int64 message = 0) {
+    return CreateWindow(L"STATIC", text,
+        WS_TABSTOP | WS_VISIBLE | WS_CHILD | SS_LEFT | SS_NOTIFY,
+        x, y, width, height,
+        g_hwnd, (HMENU)message, g_hInstance, NULL);
+}
+
+HWND CreateLabel(int x, int y, int width, LPCWSTR text, __int64 message = 0) {
+    return CreateLabel(x, y, width, 16, text, message);
+}
+
+HWND CreateButton(int x, int& y, int width, LPCWSTR text, __int64 message) {
+    HWND button = CreateWindow(L"BUTTON", text,
+        WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+        x, y, width, 26,
+        g_hwnd, (HMENU)message, g_hInstance, NULL);
+    y += 30;
+
+    return button;
+}
+
+HWND CreateCheckbox(int x, int& y, __int64 message) {
+    HWND checkbox = CreateWindow(L"BUTTON", NULL,
+        WS_VISIBLE | WS_CHILD | BS_CHECKBOX,
+        x, y + 2, 12, 12,
+        g_hwnd, (HMENU)message, g_hInstance, NULL);
+    y += 20;
+    return checkbox;
+}
+
+// The same arguments as Button.
+std::pair<HWND, HWND> CreateLabelAndCheckbox(int x, int& y, int width, LPCWSTR text, __int64 message) {
+    // We need a distinct message (HMENU) for the label so that when we call CheckDlgButton it targets the checkbox, not the label.
+    // However, we only use the low word (bottom 2 bytes) for logic, so we can safely modify the high word to make it distinct.
+    auto label = CreateLabel(x + 20, y, width, text, message + 0x10000);
+
+    auto checkbox = CreateCheckbox(x, y, message);
+    return {label, checkbox};
+}
+
+HWND CreateText(int x, int& y, int width, LPCWSTR defaultText = L"", __int64 message = NULL) {
+    HWND text = CreateWindow(MSFTEDIT_CLASS, defaultText,
+        WS_TABSTOP | WS_VISIBLE | WS_CHILD | WS_BORDER,
+        x, y, width, 26,
+        g_hwnd, (HMENU)message, g_hInstance, NULL);
+    y += 30;
+    return text;
+}
+
+void CreateComponents() {
+    int x = 10;
+    int y = 10;
+
+    CreateText(x, y, 100, L"Seed");
+    y -= 30;
+    CreateButton(x + 120, y, 100, L"Set seed", SET_SEED);
+}
+
+int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow) {
+    HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (FAILED(hr)) return hr;
+    LoadLibrary(L"Msftedit.dll");
+    WNDCLASS wndClass = {
+        CS_HREDRAW | CS_VREDRAW,
+        WndProc,
+        0,
+        0,
+        hInstance,
+        NULL,
+        NULL,
+        NULL,
+        WINDOW_CLASS,
+        WINDOW_CLASS,
+    };
+    RegisterClass(&wndClass);
+
+    RECT rect;
+    GetClientRect(GetDesktopWindow(), &rect);
+    g_hwnd = CreateWindow(WINDOW_CLASS, WINDOW_TITLE,
+        WS_SYSMENU | WS_MINIMIZEBOX,
+        rect.right - 550, 200, 500, 500,
+        nullptr, nullptr, hInstance, nullptr);
+    ShowWindow(g_hwnd, nCmdShow);
+    UpdateWindow(g_hwnd);
+    g_hInstance = hInstance;
+
+    CreateComponents();
+
+    g_bluePrince = std::make_shared<Memory>(L"BLUE PRINCE.exe");
+    g_trainer = Trainer::Create(g_bluePrince);
+
+    MSG msg;
+    while (GetMessage(&msg, nullptr, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    g_bluePrince = nullptr;
+
+    CoUninitialize();
+    return (int)msg.wParam;
+}
