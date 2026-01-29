@@ -12,6 +12,7 @@ enum RngClass {
     DogSwapper = 6,
     Trading = 7,
     Derigiblock = 8,
+    SlotMachine = 9,
 };
 
 struct SigScanTemplate {
@@ -101,6 +102,28 @@ std::shared_ptr<Trainer> Trainer::Create(const std::shared_ptr<Memory>& memory) 
         { RngClass::DoNotTamper, "41 0F 28 CA 0F 11 43 20", 13 }, // void VLB_Samples::LightGenerator::LightGenerator.Generate()
         { RngClass::DoNotTamper, "41 0F 28 CA 0F 11 43 20", 37 }, // void VLB_Samples::LightGenerator::LightGenerator.Generate()
         { RngClass::DoNotTamper, "41 0F 28 CA 0F 11 43 20", 57 }, // void VLB_Samples::LightGenerator::LightGenerator.Generate()
+        { RngClass::DoNotTamper, "45 33 C0 41 0F 28 CA 41", 12 }, // void VLB_Samples::LightGenerator::LightGenerator.Generate()
+        { RngClass::DoNotTamper, "45 33 C0 41 0F 28 CA 41", 46 }, // void VLB_Samples::LightGenerator::LightGenerator.Generate()
+        { RngClass::DoNotTamper, "45 33 C0 41 0F 28 CA 41", 76 }, // void VLB_Samples::LightGenerator::LightGenerator.Generate()
+        { RngClass::DoNotTamper, "45 33 C0 41 0F 28 C8 0F 57", 11 }, // void VLB_Samples::LightGenerator::LightGenerator.Generate()
+        { RngClass::DoNotTamper, "89 43 68 41 0F 28 CE", 12 }, // void VLB_Samples::LightGenerator::LightGenerator.Generate()
+        { RngClass::DoNotTamper, "0F 28 CE 0F 57 C0 48", 10 }, // void Rewired::Demos::CustomControllerDemo_Player::CustomControllerDemo_Player.Update()
+        { RngClass::DoNotTamper, "0F 28 CE 0F 57 C0 48", 27 }, // void Rewired::Demos::CustomControllerDemo_Player::CustomControllerDemo_Player.Update()
+        { RngClass::DoNotTamper, "0F 28 CE 0F 57 C0 48", 45 }, // void Rewired::Demos::CustomControllerDemo_Player::CustomControllerDemo_Player.Update()
+        { RngClass::DoNotTamper, "F3 0F 10 4F 1C 45 33 C0 F3", 14 }, // void ElectricArcObject::ElectricArcObject.Start()
+        { RngClass::DoNotTamper, "20 F3 0F 10 49 1C 45", 18 }, // void ElectricArcObject::ElectricArcObject.ResetTimer()
+        { RngClass::DoNotTamper, "48 8B 4F 28 F3 0F 11 47 48", -4 }, // void ElectricArcObject::ElectricArcObject.Fire()
+        { RngClass::SlotMachine, "0F 28 F0 4C 8B 4F 30", -4 }, // void SlotMachineBrain::SlotMachineBrain.StartNewSpin() -> Used to determine the duration that a reel spins for
+        { RngClass::SlotMachine, "F3 0F 10 70 20 0F 28", 16 }, // void SlotMachineWheel::SlotMachineWheel.StartSpinning() -> Used to determine how fast the slots spin
+        { RngClass::SlotMachine, "0F 28 F0 4C 8B 4F 30", -4 }, // void SlotMachineWheel::SlotMachineWheel.StopSpinning() -> Used to determine what angle the slots stop at
+        { RngClass::DoNotTamper, "F3 0F 10 4B 20 45 33 C0 F3", 14 }, // void UnityStandardAssets::ImageEffects::NoiseAndScratches::NoiseAndScratches.OnRenderImage(RenderTexture *source, RenderTexture *destination)
+        { RngClass::DoNotTamper, "F3 0F 10 4B 20 45 33 C0 F3", 35 }, // void UnityStandardAssets::ImageEffects::NoiseAndScratches::NoiseAndScratches.OnRenderImage(RenderTexture *source, RenderTexture *destination)
+        { RngClass::DoNotTamper, "48 8B 73 78 0F 28 F0", -4 },
+        { RngClass::DoNotTamper, "F3 0F 10 43 38 0F 28 C8 45", 15 },
+        { RngClass::DoNotTamper, "48 8B 4F 70 0F 28 F0", 33 },
+        { RngClass::DoNotTamper, "0F 28 F0 48 85 C9 0F 84 68", 29 },
+
+
 
 
         // There are 79 of these. Strap in.
