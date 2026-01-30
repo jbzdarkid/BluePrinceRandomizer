@@ -3,6 +3,40 @@
 
 using byte = unsigned char;
 
+// Note: Little endian
+#define LONG_TO_BYTES(val) \
+	static_cast<byte>((val & 0x00000000000000FF) >> 0x00), \
+	static_cast<byte>((val & 0x000000000000FF00) >> 0x08), \
+	static_cast<byte>((val & 0x0000000000FF0000) >> 0x10), \
+	static_cast<byte>((val & 0x00000000FF000000) >> 0x18), \
+	static_cast<byte>((val & 0x000000FF00000000) >> 0x20), \
+	static_cast<byte>((val & 0x0000FF0000000000) >> 0x28), \
+	static_cast<byte>((val & 0x00FF000000000000) >> 0x30), \
+	static_cast<byte>((val & 0xFF00000000000000) >> 0x38)
+
+// Note: Little endian
+#define INT_TO_BYTES(val) \
+	static_cast<byte>((val & 0x000000FF) >> 0x00), \
+	static_cast<byte>((val & 0x0000FF00) >> 0x08), \
+	static_cast<byte>((val & 0x00FF0000) >> 0x10), \
+	static_cast<byte>((val & 0xFF000000) >> 0x18)
+
+static int _float_to_bytes_placeholder = 0;
+#define FLOAT_TO_BYTES(val) \
+    ((_float_to_bytes_placeholder = val && false) || INT_TO_BYTES(*(int*)(&_float_to_bytes_placeholder)))
+
+#define IF_GE(...) __VA_ARGS__, 0x72 // jb
+#define IF_LT(...) __VA_ARGS__, 0x73 // jae
+#define IF_NE(...) __VA_ARGS__, 0x74 // je
+#define IF_EQ(...) __VA_ARGS__, 0x75 // jne
+#define IF_GT(...) __VA_ARGS__, 0x76 // jbe
+#define IF_LE(...) __VA_ARGS__, 0x77 // ja
+#define THEN(...) ARGCOUNT(__VA_ARGS__), __VA_ARGS__
+#define SKIP(...) 0xEB, ARGCOUNT(__VA_ARGS__), __VA_ARGS__ // jmp
+
+#define ARGCOUNT(...) std::tuple_size<decltype(std::make_tuple(__VA_ARGS__))>::value
+#define DO_WHILE_GT_ZERO(...) __VA_ARGS__, 0x77, static_cast<byte>(-2 - ARGCOUNT(__VA_ARGS__)) // Must end on a 'dec' instruction to set zero flags correclty.
+
 class Memory final {
 public:
     Memory(const std::wstring& processName);
@@ -42,8 +76,10 @@ public:
         WriteDataInternal(&data[0], ComputeOffset(offsets), sizeof(T) * data.size());
     }
 
+    uintptr_t AllocateArray(__int64 size);
+
     // This is the fully typed function -- you mostly won't need to call this.
-    int CallFunction(__int64 address,
+    int CallFunction(__int64 relativeAddress,
         const __int64 rcx, const __int64 rdx, const __int64 r8, const __int64 r9,
         const float xmm0, const float xmm1, const float xmm2, const float xmm3);
     int CallFunction(__int64 address, __int64 rcx) { return CallFunction(address, rcx, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f); }
@@ -55,7 +91,6 @@ private:
     void ReadDataInternal(void* buffer, const uintptr_t computedOffset, size_t bufferSize);
     void WriteDataInternal(const void* buffer, uintptr_t computedOffset, size_t bufferSize);
     uintptr_t ComputeOffset(std::vector<__int64> offsets, bool absolute = false);
-    uintptr_t AllocateArray(__int64 size);
 
     // Parts of the constructor / StartHeartbeat
     std::wstring _processName;
