@@ -2,57 +2,114 @@
 #include "Trainer.h"
 #include "Panels.h"
 
-enum RngClass {
-    Unknown = 0,
-    DoNotTamper = 1,
-    BirdPathing = 2,
-    Rarity = 3,
-    Drafting = 4,
-    Items = 5,
-    DogSwapper = 6,
-    Trading = 7,
-    Derigiblock = 8,
-    SlotMachine = 9,
-};
+Trainer::Trainer(const std::shared_ptr<Memory>& memory) : _memory(memory) {
+    bool success = FindAllRngFunctions();
+    assert(success);
 
-struct SigScanTemplate {
-    RngClass rngClass = RngClass::Unknown;
-    std::string scanHex;
-    int offsetFromScan = 0;
-    __int64 foundAddress = 0; // Relative to the baseAddress
-    __int64 targetFunction = 0; // Relative to the baseAddress
+    success = InjectCustomRng();
+    assert(success);
 
-    std::vector<byte> GetScanBytes() {
-        std::vector<byte> bytes;
-        byte b = 0x00;
-        bool halfByte = false;
-        for (char ch : scanHex) {
-            if (ch == ' ') continue;
+    // Ok, so we did a bunch of sigscans. Now what?
+    // First, we need to inject over the existing functions.
+    // Second, we need *our own* RNG. Let's start with something that returns statically for now.
+    // success = RedirectRngFunctions({ ... some mapping of settings here ... })
+    // Third... we can maybe classify the mapping somewhere less hard-code-y? Maybe an auxiliary array in memory would be sufficient?
+}
 
-            static std::string HEX_CHARS = "0123456789ABCDEF";
-            b *= 16;
-            b += (byte)HEX_CHARS.find(ch);
-            if (halfByte) bytes.push_back(b);
-            halfByte = !halfByte;
-        }
-        assert(!halfByte);
+bool Trainer::InjectCustomRng() {
+    // There should be 3 functions to overwrite, and we have the 3 addresses for them:
+    __int64 randomValue = _sigScans1[0].targetFunction; // UnityEngine::Random::Random.value => [0.0, 1.0]
+    __int64 randomIntRange = _sigScans2[0].targetFunction; // UnityEngine::Random::Random.Range(int minInclusive, int maxExclusive) => [min, max)
+    __int64 randomFloatRange = _sigScans3[0].targetFunction; // UnityEngine::Random::Random.Range(float minInclusive, float maxInclusive) => [min, max]
 
-        return bytes;
-    }
-};
+    __int64 rngSeedMemory = _memory->AllocateArray(RngClass::NumEntries * sizeof(__int64));
 
-std::shared_ptr<Trainer> Trainer::Create(const std::shared_ptr<Memory>& memory) {
-    auto trainer = std::make_shared<Trainer>();
-    trainer->_memory = memory;
+    std::vector<byte> intRngInstructions = {
+        // Each category should have its own seed value
+        // Then, we can hard-code what we want each category to *do*
+        // We might choose to encode this somehow? I haven't decided on the plan. Actually, I think I got it. Allocate an array with a "type" for each classification.
+        // - msvc random (https://github.com/jbzdarkid/SSRBruteForce/blob/main/State.cpp#L11)
+        // - Sequential value
+        // - Constant value
+        // (each of these will be preset into the "seed memory"
+        0x00,
+        // mov rax, [seed value + category] ? don't do this. We've got all the space in the world. Make this as readable as possible.
+        // switch based on hard-coded category handlers
+        // case 1: constant value
+        // (jump to range math)
+        // case 2: sequential value
+        // inc [seed value + category]
+        // jmp to end
+        // mov rax, [seed value]
+        // inc [seed value]
+        // rax = combine_hash(rax, category) <-- kill this, instead use the msvc_hash which takes an array of bytes.
+        // label end:
+        // modulo by the range
+        // add the low value
+        // return
+    };
 
+    __int64 intRngFunction = _memory->AllocateArray(intRngInstructions.size());
+    _memory->WriteData<byte>({intRngFunction}, intRngInstructions);
+
+    std::vector<byte> floatRngInstructions = {
+        0x48, 0x83, 0xC4, 0x10,                                     // add rsp, 10                      ; Allocate space for our local variables, while staying fpu aligned
+        0xF3, 0x0F, 0x10, 0x14, 0x24,                               // movss xmm2, [rsp]                ; Save xmm2 (we need this for scratch space)
+        0x48, 0xB8, LONG_TO_BYTES(intRngFunction),                  // mov rax, intRngFunction          ; Load the address of our integer RNG function
+        // TODO: Set args for int rng function
+        0xFF, 0xD0,                                                 // call rax                         ; Call it with range [0, 65536)
+        0x89, 0x44, 0x24, 0x08,                                     // mov [rsp+8], eax                 ; Move the return value onto the stack
+        0xF3, 0x0F, 0x10, 0x54, 0x24, 0x08,                         // movss xmm2, [rsp+8]              ; so we can move it into a float
+        0x0F, 0x5B, 0xD2,                                           // cvtdq2ps xmm2, xmm2              ; and convert it from an integer to a float
+        0xC7, 0x44, 0x24, 0x0C, FLOAT_TO_BYTES(65536),              // mov [rsp+C], 65536f              ; Move a float into our stack
+        0xF3, 0x0F, 0x5E, 0x54, 0x24, 0x0C,                         // divss xmm2, [rsp+C]              ; Divide the random value to get a value in [0.0f, 1.0f)
+        0xF3, 0x0F, 0x5C, 0xC8,                                     // subss xmm1, xmm0                 ; Determine the requested float range
+        0xF3, 0x0F, 0x59, 0xD1,                                     // mulss xmm2, xmm1                 ; Scale up our random value to the size of the float range
+        0xF3, 0x0F, 0x58, 0xC2,                                     // addss xmm0, xmm2                 ; Add the random value to the minimum to get our final result in xmm0
+        0xF3, 0x0F, 0x10, 0x14, 0x24,                               // movss xmm2, [rsp]                ; Restore xmm2 from our saved location
+        0x48, 0x83, 0xEC, 0x10,                                     // sub rsp, 10                      ; Restore the stack pointer (freeing our local variables)
+        0xC3,                                                       // ret                              ;
+    };
+
+    __int64 floatRngFunction = _memory->AllocateArray(sizeof(floatRngInstructions));
+    _memory->WriteData<byte>({floatRngFunction}, floatRngInstructions);
+
+    _memory->WriteData<byte>({randomValue}, {
+        0xB1, 0x00,                                                 // mov cl, 0                        ; RngClass.Unknown
+        SKIP(0xB1, 0x01),                                           // mov cl, 1                        ; RngClass.DoNotTamper
+        SKIP(0xB1, 0x02),                                           // mov cl, 2                        ; RngClass.BirdPathing
+        SKIP(0xB1, 0x03),                                           // mov cl, 3                        ; RngClass.Rarity
+        SKIP(0xB1, 0x04),                                           // mov cl, 4                        ; RngClass.Drafting
+        SKIP(0xB1, 0x05),                                           // mov cl, 5                        ; RngClass.Items
+        SKIP(0xB1, 0x06),                                           // mov cl, 6                        ; RngClass.DogSwapper
+        SKIP(0xB1, 0x07),                                           // mov cl, 7                        ; RngClass.Trading
+        SKIP(0xB1, 0x08),                                           // mov cl, 8                        ; RngClass.Derigiblock
+        SKIP(0xB1, 0x09),                                           // mov cl, 9                        ; RngClass.SlotMachine
+
+        0x48, 0x83, 0xC4, 0x10,                                     // add rsp, 10                      ; Allocate space for our local variables, while staying fpu aligned
+        0xC7, 0x44, 0x24, 0x00, FLOAT_TO_BYTES(0.0f),               // mov dword ptr ss:[rsp], 0.0f	    ; Store a float on the stack (floats cannot be handled as immediate values)
+        0xF3, 0x0F, 0x10, 0x04, 0x24,                               // movss xmm0, [rsp]                ; Move the float into xmm0
+        0xC7, 0x44, 0x24, 0x00, FLOAT_TO_BYTES(1.0f),               // mov dword ptr ss:[rsp], 0.0f	    ; Store a float on the stack (floats cannot be handled as immediate values)
+        0xF3, 0x0F, 0x10, 0x04, 0x24,                               // movss xmm1, [rsp]                ; Move the float into xmm1
+        0x48, 0x83, 0xEC, 0x10,                                     // sub rsp, 0x10                    ; Restore the stack pointer (freeing our local variables)
+        0x48, 0xB8, LONG_TO_BYTES(floatRngFunction),                // mov rax, intRngFunction          ; Load the address of our integer RNG function
+        0xFF, 0xE0,                                                 // jmp rax                          ; Jump to it (tail call elision)
+    });
+
+
+    __debugbreak();
+    return true;
+}
+
+bool Trainer::FindAllRngFunctions() {
     // I have (painstakingly) generated a bunch of sigscans for all the BluePrince code locations which are calling into the RNG.
     // They are categorized on two dimensions:
     // - First, by the function they're using. This is important for our injection; each function class has a particular expected return type that we must match.
     // - Second, by the usage. This is important for modding, since we care about some of these random values more so than others.
-    // In some cases, I have also annotated the sigscan by the name of the calling function, in the (vain) hope that it will help someone, somehow.
-    std::vector<SigScanTemplate> sigScans {
-        /*
-        // UnityEngine::Random::Random.value => [0.0, 1.0]
+    // I have also annotated the sigscan by the name of the calling function, to help justify the categorization.
+
+    // UnityEngine::Random::Random.value => [0.0, 1.0]
+    _sigScans1 = {
         { RngClass::DoNotTamper, "41 80 7E 29 00 48 8B D8", 17 }, // void VLB_Samples::LightGenerator::LightGenerator.Generate()
         { RngClass::DoNotTamper, "41 80 7E 29 00 48 8B D8", 30 }, // void VLB_Samples::LightGenerator::LightGenerator.Generate()
         { RngClass::DoNotTamper, "41 80 7E 29 00 48 8B D8", 43 }, // void VLB_Samples::LightGenerator::LightGenerator.Generate()
@@ -68,8 +125,10 @@ std::shared_ptr<Trainer> Trainer::Create(const std::shared_ptr<Memory>& memory) 
         { RngClass::Trading,     "EB 5A 85 FF 78 2C", -4 }, // void TradeManager::TradeManager.SetTradeOffer(ItemData item)
         { RngClass::Trading,     "48 85 F6 75 76 33 C9", 8 },  // void TradeManager::TradeManager.SetTradeOffer(ItemData item)
         { RngClass::DoNotTamper, "0F 2F C6 76 27 33 C9", 8 }, // void BluePrince::TestActionPrompter::TestActionPrompter.Update()
+    };
 
-        // UnityEngine::Random::Random.Range(int minInclusive, int maxExclusive) => [min, max)
+    // UnityEngine::Random::Random.Range(int minInclusive, int maxExclusive) => [min, max)
+    _sigScans2 = {
         { RngClass::DoNotTamper, "8B 57 1C 45 33 C0 8B", 12 }, // void VLB::DynamicOcclusionAbstractBase::DynamicOcclusionAbstractBase.ProcessOcclusion(DynamicOcclusionAbstractBase.ProcessOcclusionSource source)
         { RngClass::DoNotTamper, "45 33 C0 BA 68 01 00 00 33", -4 }, // void VLB_Samples::LightGenerator::LightGenerator.Generate()
         { RngClass::DoNotTamper, "45 33 C0 BA 68 01 00 00 33", 13 }, // void VLB_Samples::LightGenerator::LightGenerator.Generate()
@@ -83,9 +142,10 @@ std::shared_ptr<Trainer> Trainer::Create(const std::shared_ptr<Memory>& memory) 
         { RngClass::Trading,     "48 63 C8 3B 4B 18 73 31", -4 }, // ItemData TradeManager::TradeManager.PickFromTradingTier(int tier) -> Seems to be directly picking the random item to provide (from a given list)
         { RngClass::Derigiblock, "74 48 45 33 C0 8B 53", 11 }, // Object Derigiblocks::DerigiblocksBlockDatabase::DerigiblocksBlockDatabase.GetBlock(DerigiblocksBlockType type)
         { RngClass::DoNotTamper, "38 4B 1C 0F 95 C1", 10 }, // AudioClip SoundeR::AudioPicker::AudioPicker.GetAudioClip()
-        */
+    };
 
-        // UnityEngine::Random::Random.Range(float minInclusive, float maxInclusive) => [min, max]
+    // UnityEngine::Random::Random.Range(float minInclusive, float maxInclusive) => [min, max]
+    _sigScans3 = {
         { RngClass::DoNotTamper, "83 7F 18 02 0F 86 1E 05 00 00", -4 }, // void iTween::iTween.ApplyShakePositionTargets()
         { RngClass::DoNotTamper, "83 7F 18 02 0F 86 DA 04 00 00", -4 }, // void iTween::iTween.ApplyShakePositionTargets()
         { RngClass::DoNotTamper, "83 7F 18 02 0F 86 96 04 00 00", -4 }, // void iTween::iTween.ApplyShakePositionTargets()
@@ -140,16 +200,13 @@ std::shared_ptr<Trainer> Trainer::Create(const std::shared_ptr<Memory>& memory) 
         { RngClass::DoNotTamper, "47 05 00 00 80 78 1C 00 75 0A", 34 }, // AudioSource SoundeR::AudioEmitter::AudioEmitter.PlaySoundAtPosition(AudioCollectionAsset collection, Vector3 worldPosition, bool attachToParent)
         { RngClass::DoNotTamper, "73 05 00 00 80 78 1C 00 75 0A", 34 }, // AudioSource SoundeR::AudioEmitter::AudioEmitter.PlaySoundAtPosition(AudioCollectionAsset collection, Vector3 worldPosition, int index, bool attachToParent) 
         { RngClass::DoNotTamper, "36 05 00 00 80 78 1C 00 75 0A", 34 }, // AudioSource SoundeR::AudioEmitter::AudioEmitter.PlaySoundAtPosition(AudioCollectionAsset collection, Vector3 worldPosition, int index, bool attachToParent)
-        { RngClass::DoNotTamper, "EB 2B F3 44 0F 10 84 24 90 00 00 00", -4 },
-        { RngClass::DoNotTamper, "EB 2F F3 0F 10 BC 24 90 00 00 00", -4 },
-        { RngClass::DoNotTamper, "44 0F 28 D8 E9 80 00 00 00", -4 },
-        { RngClass::DoNotTamper, "44 0F 28 D8 EB 3A", -4 }, 
-        { RngClass::DoNotTamper, "44 0F 28 D0 E9 80 00 00 00", -4 },
-        { RngClass::DoNotTamper, "44 0F 28 D0 EB 3A", -4 },
-
-
-
-
+        { RngClass::DoNotTamper, "EB 2B F3 44 0F 10 84 24 90 00 00 00", -4 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.Refresh()
+        { RngClass::DoNotTamper, "EB 2F F3 0F 10 BC 24 90 00 00 00", -4 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.Refresh()
+        { RngClass::DoNotTamper, "44 0F 28 D8 E9 80 00 00 00", -4 }, // bool FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.AddGroupItems()
+        { RngClass::DoNotTamper, "44 0F 28 D8 EB 3A", -4 }, // bool FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.AddGroupItems()
+        { RngClass::DoNotTamper, "44 0F 28 D0 E9 80 00 00 00", -4 }, // bool FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.AddGroupItems()
+        { RngClass::DoNotTamper, "44 0F 28 D0 EB 3A", -4 }, // bool FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.AddGroupItems()
+        // 0x18208fbc9 is next
 
 
 
@@ -158,8 +215,20 @@ std::shared_ptr<Trainer> Trainer::Create(const std::shared_ptr<Memory>& memory) 
 
     };
 
-    for (auto& sigScan : sigScans) {
-        memory->AddSigScan(sigScan.GetScanBytes(), [&sigScan](int64_t offset, int index, const std::vector<uint8_t>& data) {
+    for (auto& sigScan : _sigScans1) {
+        _memory->AddSigScan(sigScan.GetScanBytes(), [&sigScan](int64_t offset, int index, const std::vector<uint8_t>& data) {
+            sigScan.foundAddress = offset + index + sigScan.offsetFromScan;
+            sigScan.targetFunction = Memory::ReadStaticInt(offset, index + sigScan.offsetFromScan, data);
+        });
+    }
+    for (auto& sigScan : _sigScans2) {
+        _memory->AddSigScan(sigScan.GetScanBytes(), [&sigScan](int64_t offset, int index, const std::vector<uint8_t>& data) {
+            sigScan.foundAddress = offset + index + sigScan.offsetFromScan;
+            sigScan.targetFunction = Memory::ReadStaticInt(offset, index + sigScan.offsetFromScan, data);
+        });
+    }
+    for (auto& sigScan : _sigScans3) {
+        _memory->AddSigScan(sigScan.GetScanBytes(), [&sigScan](int64_t offset, int index, const std::vector<uint8_t>& data) {
             sigScan.foundAddress = offset + index + sigScan.offsetFromScan;
             sigScan.targetFunction = Memory::ReadStaticInt(offset, index + sigScan.offsetFromScan, data);
             if (sigScan.targetFunction != 0x00000000023fcc00) {
@@ -173,74 +242,20 @@ std::shared_ptr<Trainer> Trainer::Create(const std::shared_ptr<Memory>& memory) 
         });
     }
 
-    size_t numFailedScans = memory->ExecuteSigScans();
-    if (numFailedScans != 0) return nullptr; // Sigscans failed, we'll try again later.
+    size_t numFailedScans = _memory->ExecuteSigScans();
+    if (numFailedScans != 0) return false; // Sigscans failed, we'll try again later.
 
-    // Ok, so we did a bunch of sigscans. Now what?
-    // First, we need to inject over the existing functions.
-    // Second, we need *our own* RNG. Let's start with something that returns statically for now.
+    // Double check that each group of sigscans hits the same target function (i.e. verifying the AOB and offsets are still lining up)
+    // This also prevents re-randomization.
+    for (const auto& sigScan : _sigScans1) {
+        if (sigScan.targetFunction != _sigScans1[0].targetFunction) return false;
+    }
+    for (const auto& sigScan : _sigScans2) {
+        if (sigScan.targetFunction != _sigScans2[0].targetFunction) return false;
+    }
+    for (const auto& sigScan : _sigScans3) {
+        if (sigScan.targetFunction != _sigScans3[0].targetFunction) return false;
+    }
 
-    // There should be 3 functions to overwrite, and we have the 3 addresses for them:
-    __int64 randomValue = sigScans[0].targetFunction; // UnityEngine::Random::Random.value => [0.0, 1.0]
-    __int64 randomIntRange = sigScans[10].targetFunction; // UnityEngine::Random::Random.Range(int minInclusive, int maxExclusive) => [min, max)
-    __int64 randomFloatRange = sigScans[20].targetFunction; // UnityEngine::Random::Random.Range(float minInclusive, float maxInclusive) => [min, max]
-
-
-    constexpr byte IntRngInstructions[] = {
-        // uh oh.
-        0x00,
-    };
-
-
-    constexpr byte floatRngInstructions[] = {
-        // We can compute floats as a function of ints, and just do some *math*
-        // [xmm0, xmm1]
-        // e.g. [0.5, 2.5] == [0, 65535] / (65536/2.0) * 
-        0x00,
-    };
-
-    uintptr_t floatRngFunction = memory->AllocateArray(sizeof(floatRngInstructions));
-
-
-    memory->WriteData<byte>({randomValue}, {
-        0xB1, 0x00,                                                 // mov cl, 0   ; RngClass.Unknown
-        SKIP(0xB1, 0x01),                                           // mov cl, 1   ; RngClass.DoNotTamper
-        SKIP(0xB1, 0x02),                                           // mov cl, 2   ; RngClass.BirdPathing
-        SKIP(0xB1, 0x03),                                           // mov cl, 3   ; RngClass.Rarity
-        SKIP(0xB1, 0x04),                                           // mov cl, 4   ; RngClass.Drafting
-        SKIP(0xB1, 0x05),                                           // mov cl, 5   ; RngClass.Items
-        SKIP(0xB1, 0x06),                                           // mov cl, 6   ; RngClass.DogSwapper
-        SKIP(0xB1, 0x07),                                           // mov cl, 7   ; RngClass.Trading
-        SKIP(0xB1, 0x08),                                           // mov cl, 8   ; RngClass.Derigiblock
-        SKIP(0xB1, 0x09),                                           // mov cl, 9   ; RngClass.SlotMachine
-
-        // xmm0 = 0.0f
-        // xmm1 = 1.0f
-        // call internal rand range function
-                                                                    // jmp 0x20
-        0x48, 0x83, 0xEC, 0x10,                                     // sub rsp, 0x10                    ; Allocate some stack space
-        0xC7, 0x44, 0x24, 0x00, FLOAT_TO_BYTES(0.0f),               // mov dword ptr ss:[rsp], 0.0f	    ; Store a float on the stack (floats cannot be handled as immediate values)
-        0xF3, 0x0F, 0x10, 0x04, 0x24,                               // movss xmm0, [rsp]                ; Move the float into xmm0
-        0xC7, 0x44, 0x24, 0x00, FLOAT_TO_BYTES(1.0f),               // mov dword ptr ss:[rsp], 0.0f	    ; Store a float on the stack (floats cannot be handled as immediate values)
-        0xF3, 0x0F, 0x10, 0x04, 0x24,                               // movss xmm1, [rsp]                ; Move the float into xmm1
-        // mov rcx floatRngFunction
-        // jmp rcx
-    });
-
-
-
-
-
-
-
-
-
-
-
-
-    return trainer;
-}
-
-// Restore default game settings when shutting down the trainer.
-Trainer::~Trainer() {
+    return true;
 }

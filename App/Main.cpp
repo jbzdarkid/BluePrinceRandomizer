@@ -13,7 +13,6 @@
 // Globals
 HWND g_hwnd;
 HINSTANCE g_hInstance;
-std::shared_ptr<Memory> g_bluePrince;
 std::shared_ptr<Trainer> g_trainer;
 
 #define SetWindowTextA(...) static_assert(false, "Call SetStringText instead of SetWindowTextA");
@@ -210,8 +209,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
     CreateComponents();
 
-    g_bluePrince = std::make_shared<Memory>(L"BLUE PRINCE.exe");
-    g_trainer = Trainer::Create(g_bluePrince);
+    auto bluePrince = std::make_unique<Memory>(L"BLUE PRINCE.exe");
+    g_trainer = std::make_shared<Trainer>(std::move(bluePrince));
 
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
@@ -219,7 +218,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
         DispatchMessage(&msg);
     }
 
-    g_bluePrince = nullptr;
+    // g_trainer is freed during WM_DESTROY (to delay in case there are background tasks)
 
     CoUninitialize();
     return (int)msg.wParam;
