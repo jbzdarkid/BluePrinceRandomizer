@@ -17,12 +17,8 @@ Trainer::Trainer(const std::shared_ptr<Memory>& memory) : _memory(memory) {
 }
 
 bool Trainer::InjectCustomRng() {
-    // There should be 3 functions to overwrite, and we have the 3 addresses for them:
-    __int64 randomValue = _sigScans1[0].targetFunction; // UnityEngine::Random::Random.value => [0.0, 1.0]
-    __int64 randomIntRange = _sigScans2[0].targetFunction; // UnityEngine::Random::Random.Range(int minInclusive, int maxExclusive) => [min, max)
-    __int64 randomFloatRange = _sigScans3[0].targetFunction; // UnityEngine::Random::Random.Range(float minInclusive, float maxInclusive) => [min, max]
-
-    __int64 rngSeedMemory = _memory->AllocateArray(RngClass::NumEntries * sizeof(__int64));
+    __int64 rngSeedArray = _memory->AllocateArray(RngClass::NumEntries * sizeof(__int64));
+    __int64 rngCategoryBehaviors = _memory->AllocateArray(RngClass::NumEntries * sizeof(byte));
 
     std::vector<byte> intRngInstructions = {
         // Each category should have its own seed value
@@ -31,33 +27,86 @@ bool Trainer::InjectCustomRng() {
         // - msvc random (https://github.com/jbzdarkid/SSRBruteForce/blob/main/State.cpp#L11)
         // - Sequential value
         // - Constant value
-        // (each of these will be preset into the "seed memory"
-        0x00,
-        // mov rax, [seed value + category] ? don't do this. We've got all the space in the world. Make this as readable as possible.
-        // switch based on hard-coded category handlers
-        // case 1: constant value
-        // (jump to range math)
-        // case 2: sequential value
-        // inc [seed value + category]
-        // jmp to end
-        // mov rax, [seed value]
-        // inc [seed value]
-        // rax = combine_hash(rax, category) <-- kill this, instead use the msvc_hash which takes an array of bytes.
-        // label end:
-        // modulo by the range
-        // add the low value
-        // return
+        // (each of these will be preset into the "seed memory"?)
+        0x56,                                                   // push rsi                         ; Preserve the values of rsi and rdi (we will use them as scratch registers)
+        0x57,                                                   // push rdi
+        0x48, 0x31, 0xC0,                                       // xor rax, rax                     ; Reset the return value to 0 (just in case)
+        0x4D, 0x0F, 0xB6, 0xC0,                                 // movzx r8, r8b                    ; Clear any high bits on r8 (we used r8b to save our "category")
+        0x48, 0xBE, LONG_TO_BYTES(rngCategoryBehaviors),        // mov rsi, rngCategoryBehaviors    ; Load in the lookup table
+        IF_EQ(0x42, 0x80, 0x3C, 0x06, 0x01),                    // cmp byte ptr [rsi + r8], 1       ; If this RNG category is using type 1 (fixed value)
+        THEN(                                                   //                                  ; Case 1 {
+            0x48, 0xBF, LONG_TO_BYTES(rngSeedArray),            // mov rdi, rngSeedArray            ;   Load in the table of RNG seeds
+            0x4A, 0x8B, 0x34, 0xC7,                             // mov rsi, qword ptr [rdi + r8*8]  ;   Look up the seed for this RNG category
+            0x48, 0x89, 0xF0                                    // mov rax, rsi                     ;   Save the seed as the return value (rax)
+        ),                                                      //                                  ; }
+        0x48, 0xBE, LONG_TO_BYTES(rngCategoryBehaviors),        // mov rsi, rngCategoryBehaviors    ; Load in the lookup table
+        IF_EQ(0x42, 0x80, 0x3C, 0x06, 0x02),                    // cmp byte ptr [rsi + r8], 2       ; If this RNG category is using type 2 (steadily increasing value)
+        THEN(                                                   //                                  ; Case 2 {
+            0x48, 0xBF, LONG_TO_BYTES(rngSeedArray),            // mov rdi, rngSeedArray            ;   Load in the table of RNG seeds
+            0x4A, 0x8B, 0x34, 0xC7,                             // mov rsi, qword ptr [rdi + r8*8]  ;   Look up the seed for this RNG category
+            0x48, 0x89, 0xF0,                                   // mov rax, rsi                     ;   Save the seed as the return value (rax)
+            0x48, 0xFF, 0xC6,                                   // inc rsi                          ;   Increment the seed
+            0x4A, 0x89, 0x34, 0xC7                              // mov qword ptr [rdi + r8*8], rsi  ;   Save back the incremented seed value
+        ),                                                      //                                  ; }
+        0x48, 0xBE, LONG_TO_BYTES(rngCategoryBehaviors),        // mov rsi, rngCategoryBehaviors    ; Load in the lookup table
+        IF_EQ(0x42, 0x80, 0x3C, 0x06, 0x03),                    // cmp byte ptr [rsi + r8], 3       ; If this RNG category is using type 3 (pseudorandom value)
+        THEN(                                                   //                                  ; Case 3 {
+            0x48, 0xBF, LONG_TO_BYTES(rngSeedArray),            // mov rdi, rngSeedArray            ;   Load in the table of RNG seeds
+            0x4A, 0x8B, 0x34, 0xC7,                             // mov rsi, qword ptr [rdi + r8*8]  ;   Look up the seed for this RNG category
+            0x56,                                               // push rsi                         ;   Add our RNG seed data to the hash buffer
+            0x41, 0x50,                                         // push r8                          ;   (including the RNG category ... why?)
+            0x48, 0xBE, LONG_TO_BYTES(14695981039346656037),    // mov rsi, 14695981039346656037    ;   rsi = _FNV_offset_basis
+            0x48, 0xBF, LONG_TO_BYTES(1099511628211),           // mov rdi, 1099511628211           ;   rdi = _FNV_prime
+            0x48, 0xC7, 0xC0, INT_TO_BYTES(16),                 // mov rax, 16                      ;   rax = 16
+            DO_WHILE_GT_ZERO(                                   //                                  ;   do {
+                0x66, 0x33, 0x34, 0x24,                         // xor si, word ptr [rsp]           ;     rsi ^= [rsp]  // [rsp] is the head of the buffer
+                0x48, 0xFF, 0xCC,                               // dec rsp                          ;     rsp--         // move to the next byte in the buffer
+                0x48, 0x0F, 0xAF, 0xF7,                         // imul rsi, rdi                    ;     rsi *= rdi    // randomize by multiplying in a large prime
+                0x48, 0xFF, 0xC8                                // dec rax                          ;     rax--         // decrement loop variable
+            ),                                                  //                                  ;   } while (rax > 0)
+            0x48, 0xBF, LONG_TO_BYTES(rngSeedArray),            // mov rdi, rngSeedArray            ;   Load in the table of RNG seeds
+            0x4A, 0x8B, 0x04, 0xC7,                             // mov rax, qword ptr [rdi + r8*8]  ;   Save the *previous* seed value as the return value (rax)
+            0x4A, 0x89, 0x34, 0xC7                              // mov qword ptr [rdi + r8*8], rsi  ;   Save back the *new* seed value
+        ),
+        // Registers:
+        // r8b -> contains RNG category (byte)
+        // rax -> contains random value (long)
+        // ecx -> contains minimum value (int, inclusive)
+        // edx -> contains maximum value (int, exclusive)
+        // rdi -> free
+        // rsi -> free
+
     };
 
     __int64 intRngFunction = _memory->AllocateArray(intRngInstructions.size());
     _memory->WriteData<byte>({intRngFunction}, intRngInstructions);
 
+    __int64 randomIntRange = _sigScans2[0].targetFunction; // UnityEngine::Random::Random.Range(int minInclusive, int maxExclusive) => [min, max)
+    _memory->WriteData<byte>({randomIntRange}, {
+        0x41, 0xB0, 0x00,                                           // mov r8b, 0                       ; RngClass.Unknown
+        SKIP(0x41, 0xB0, 0x01),                                     // mov r8b, 1                       ; RngClass.DoNotTamper
+        SKIP(0x41, 0xB0, 0x02),                                     // mov r8b, 2                       ; RngClass.BirdPathing
+        SKIP(0x41, 0xB0, 0x03),                                     // mov r8b, 3                       ; RngClass.Rarity
+        SKIP(0x41, 0xB0, 0x04),                                     // mov r8b, 4                       ; RngClass.Drafting
+        SKIP(0x41, 0xB0, 0x05),                                     // mov r8b, 5                       ; RngClass.Items
+        SKIP(0x41, 0xB0, 0x06),                                     // mov r8b, 6                       ; RngClass.DogSwapper
+        SKIP(0x41, 0xB0, 0x07),                                     // mov r8b, 7                       ; RngClass.Trading
+        SKIP(0x41, 0xB0, 0x08),                                     // mov r8b, 8                       ; RngClass.Derigiblock
+        SKIP(0x41, 0xB0, 0x09),                                     // mov r8b, 9                       ; RngClass.SlotMachine
+
+        0x48, 0xB8, LONG_TO_BYTES(intRngFunction),                  // mov rax, intRngFunction        ; Load the address of the generic floating-point function, after RngClass is set
+        0xFF, 0xE0,                                                 // jmp rax                          ; Jump to it (tail call elision)
+    });
+
     std::vector<byte> floatRngInstructions = {
+        0x51,                                                       // push rcx                         ; Preserve rcx and rdx
+        0x52,                                                       // push rdx                         ; 
         0x48, 0x83, 0xC4, 0x10,                                     // add rsp, 10                      ; Allocate space for our local variables, while staying fpu aligned
         0xF3, 0x0F, 0x10, 0x14, 0x24,                               // movss xmm2, [rsp]                ; Save xmm2 (we need this for scratch space)
+        0xB9, INT_TO_BYTES(0x0000),                                 // mov ecx, 0                       ; Set the arguments for the integer RNG function
+        0xBA, INT_TO_BYTES(0xFFFF),                                 // mov edx, 65536                   ; 
         0x48, 0xB8, LONG_TO_BYTES(intRngFunction),                  // mov rax, intRngFunction          ; Load the address of our integer RNG function
-        // TODO: Set args for int rng function
-        0xFF, 0xD0,                                                 // call rax                         ; Call it with range [0, 65536)
+        0xFF, 0xD0,                                                 // call rax                         ; rax = Call it with range [0, 65536)
         0x89, 0x44, 0x24, 0x08,                                     // mov [rsp+8], eax                 ; Move the return value onto the stack
         0xF3, 0x0F, 0x10, 0x54, 0x24, 0x08,                         // movss xmm2, [rsp+8]              ; so we can move it into a float
         0x0F, 0x5B, 0xD2,                                           // cvtdq2ps xmm2, xmm2              ; and convert it from an integer to a float
@@ -68,34 +117,53 @@ bool Trainer::InjectCustomRng() {
         0xF3, 0x0F, 0x58, 0xC2,                                     // addss xmm0, xmm2                 ; Add the random value to the minimum to get our final result in xmm0
         0xF3, 0x0F, 0x10, 0x14, 0x24,                               // movss xmm2, [rsp]                ; Restore xmm2 from our saved location
         0x48, 0x83, 0xEC, 0x10,                                     // sub rsp, 10                      ; Restore the stack pointer (freeing our local variables)
+        0x5A,                                                       // pop rdx                          ; Restore rcx and rdx
+        0x59,                                                       // pop rcx                          ;
         0xC3,                                                       // ret                              ;
     };
 
     __int64 floatRngFunction = _memory->AllocateArray(sizeof(floatRngInstructions));
     _memory->WriteData<byte>({floatRngFunction}, floatRngInstructions);
 
+    __int64 randomFloatRange = _sigScans3[0].targetFunction; // UnityEngine::Random::Random.Range(float minInclusive, float maxInclusive) => [min, max]
+    _memory->WriteData<byte>({randomFloatRange}, {
+        0x41, 0xB0, 0x00,                                           // mov r8b, 0                       ; RngClass.Unknown
+        SKIP(0x41, 0xB0, 0x01),                                     // mov r8b, 1                       ; RngClass.DoNotTamper
+        SKIP(0x41, 0xB0, 0x02),                                     // mov r8b, 2                       ; RngClass.BirdPathing
+        SKIP(0x41, 0xB0, 0x03),                                     // mov r8b, 3                       ; RngClass.Rarity
+        SKIP(0x41, 0xB0, 0x04),                                     // mov r8b, 4                       ; RngClass.Drafting
+        SKIP(0x41, 0xB0, 0x05),                                     // mov r8b, 5                       ; RngClass.Items
+        SKIP(0x41, 0xB0, 0x06),                                     // mov r8b, 6                       ; RngClass.DogSwapper
+        SKIP(0x41, 0xB0, 0x07),                                     // mov r8b, 7                       ; RngClass.Trading
+        SKIP(0x41, 0xB0, 0x08),                                     // mov r8b, 8                       ; RngClass.Derigiblock
+        SKIP(0x41, 0xB0, 0x09),                                     // mov r8b, 9                       ; RngClass.SlotMachine
+
+        0x48, 0xB8, LONG_TO_BYTES(floatRngFunction),                // mov rax, floatRngFunction        ; Load the address of the generic floating-point function, after RngClass is set
+        0xFF, 0xE0,                                                 // jmp rax                          ; Jump to it (tail call elision)
+    });
+
+    __int64 randomValue = _sigScans1[0].targetFunction; // UnityEngine::Random::Random.value => [0.0, 1.0]
     _memory->WriteData<byte>({randomValue}, {
-        0xB1, 0x00,                                                 // mov cl, 0                        ; RngClass.Unknown
-        SKIP(0xB1, 0x01),                                           // mov cl, 1                        ; RngClass.DoNotTamper
-        SKIP(0xB1, 0x02),                                           // mov cl, 2                        ; RngClass.BirdPathing
-        SKIP(0xB1, 0x03),                                           // mov cl, 3                        ; RngClass.Rarity
-        SKIP(0xB1, 0x04),                                           // mov cl, 4                        ; RngClass.Drafting
-        SKIP(0xB1, 0x05),                                           // mov cl, 5                        ; RngClass.Items
-        SKIP(0xB1, 0x06),                                           // mov cl, 6                        ; RngClass.DogSwapper
-        SKIP(0xB1, 0x07),                                           // mov cl, 7                        ; RngClass.Trading
-        SKIP(0xB1, 0x08),                                           // mov cl, 8                        ; RngClass.Derigiblock
-        SKIP(0xB1, 0x09),                                           // mov cl, 9                        ; RngClass.SlotMachine
+        0x41, 0xB0, 0x00,                                           // mov r8b, 0                       ; RngClass.Unknown
+        SKIP(0x41, 0xB0, 0x01),                                     // mov r8b, 1                       ; RngClass.DoNotTamper
+        SKIP(0x41, 0xB0, 0x02),                                     // mov r8b, 2                       ; RngClass.BirdPathing
+        SKIP(0x41, 0xB0, 0x03),                                     // mov r8b, 3                       ; RngClass.Rarity
+        SKIP(0x41, 0xB0, 0x04),                                     // mov r8b, 4                       ; RngClass.Drafting
+        SKIP(0x41, 0xB0, 0x05),                                     // mov r8b, 5                       ; RngClass.Items
+        SKIP(0x41, 0xB0, 0x06),                                     // mov r8b, 6                       ; RngClass.DogSwapper
+        SKIP(0x41, 0xB0, 0x07),                                     // mov r8b, 7                       ; RngClass.Trading
+        SKIP(0x41, 0xB0, 0x08),                                     // mov r8b, 8                       ; RngClass.Derigiblock
+        SKIP(0x41, 0xB0, 0x09),                                     // mov r8b, 9                       ; RngClass.SlotMachine
 
         0x48, 0x83, 0xC4, 0x10,                                     // add rsp, 10                      ; Allocate space for our local variables, while staying fpu aligned
         0xC7, 0x44, 0x24, 0x00, FLOAT_TO_BYTES(0.0f),               // mov dword ptr ss:[rsp], 0.0f	    ; Store a float on the stack (floats cannot be handled as immediate values)
         0xF3, 0x0F, 0x10, 0x04, 0x24,                               // movss xmm0, [rsp]                ; Move the float into xmm0
-        0xC7, 0x44, 0x24, 0x00, FLOAT_TO_BYTES(1.0f),               // mov dword ptr ss:[rsp], 0.0f	    ; Store a float on the stack (floats cannot be handled as immediate values)
-        0xF3, 0x0F, 0x10, 0x04, 0x24,                               // movss xmm1, [rsp]                ; Move the float into xmm1
+        0xC7, 0x44, 0x24, 0x00, FLOAT_TO_BYTES(1.0f),               // mov dword ptr ss:[rsp], 1.0f	    ; Store a float on the stack (floats cannot be handled as immediate values)
+        0xF3, 0x0F, 0x10, 0x0C, 0x24,                               // movss xmm1, [rsp]                ; Move the float into xmm1
         0x48, 0x83, 0xEC, 0x10,                                     // sub rsp, 0x10                    ; Restore the stack pointer (freeing our local variables)
-        0x48, 0xB8, LONG_TO_BYTES(floatRngFunction),                // mov rax, intRngFunction          ; Load the address of our integer RNG function
+        0x48, 0xB8, LONG_TO_BYTES(floatRngFunction),                // mov rax, floatRngFunction        ; Load the address of the generic floating-point function, after RngClass is set
         0xFF, 0xE0,                                                 // jmp rax                          ; Jump to it (tail call elision)
     });
-
 
     __debugbreak();
     return true;
