@@ -220,15 +220,13 @@ HWND CreateText(int& x, int& y, int width, LPCWSTR defaultText = L"", __int64 me
 }
 
 void CreateComponents() {
-    // g_trainer->SetAllSeeds(std::vector<__int64>(Trainer::RngClass::NumEntries, 42));
-
     std::vector<const wchar_t*> categories = {L"Unknown", L"DoNotTamper", L"BirdPathing", L"Rarity", L"Drafting", L"Items", L"DogSwapper", L"Trading", L"Derigiblock", L"SlotMachine", L"All"};
     int y = 10;
     for (int i = 0; i < categories.size(); i++) {
         int x = 10;
         CreateLabel(x, y + 5, 100, categories[i]);
         CreateLabel(x, y + 5, 40, L"Seed:");
-        g_seedInputs[i] = CreateText(x, y, 100, L"0");
+        g_seedInputs[i] = CreateText(x, y, 100, L"42");
         CreateButton(x, y, 40, L"Set", SET_SEED_UNKNOWN + i);
 
         x += 10;
@@ -275,9 +273,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     g_trainer = Trainer::Create(bluePrince);
     if (!g_trainer) {
         MessageBoxW(g_hwnd, L"Game is not running or already injected", L"Trainer failed to start", MB_TASKMODAL | MB_ICONHAND | MB_OK | MB_SETFOREGROUND);
+    } else {
+        g_trainer->SetAllSeeds(42); // A seed value of 0 causes a divide-by-zero error. I can probably fix that, if it matters.
+        g_trainer->SetAllBehaviors(Trainer::RngBehavior::Constant);
     }
-
-    if (g_trainer) g_trainer->SetAllBehaviors(Trainer::RngBehavior::Constant);
 
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {

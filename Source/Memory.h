@@ -31,7 +31,7 @@ using byte = unsigned char;
 #define SKIP(...) 0xEB, ARGCOUNT(__VA_ARGS__), __VA_ARGS__ // jmp
 
 #define ARGCOUNT(...) std::tuple_size<decltype(std::make_tuple(__VA_ARGS__))>::value
-#define DO_WHILE_GT_ZERO(...) __VA_ARGS__, 0x77, static_cast<byte>(-2 - ARGCOUNT(__VA_ARGS__)) // Must end on a 'dec' instruction to set zero flags correclty.
+#define DO_WHILE_NONZERO(...) __VA_ARGS__, 0x75, static_cast<byte>(-2 - ARGCOUNT(__VA_ARGS__)) // Must end on a 'dec' instruction to set ZF correctly.
 
 class Memory final {
 public:

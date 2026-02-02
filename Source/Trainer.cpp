@@ -53,16 +53,15 @@ void Trainer::InjectCustomRng() {
             0x48, 0xBF, LONG_TO_BYTES(_rngSeedArray),           // mov rdi, _rngSeedArray           ;     Load in the table of RNG seeds
             0x4A, 0x8B, 0x34, 0xC7,                             // mov rsi, qword ptr [rdi + r8*8]  ;     Look up the seed for this RNG category
             0x56,                                               // push rsi                         ;     Add our RNG seed data to the hash buffer
-            0x41, 0x50,                                         // push r8                          ;     (including the RNG category ... why?)
             0x48, 0xBE, LONG_TO_BYTES(14695981039346656037),    // mov rsi, 14695981039346656037    ;     rsi = _FNV_offset_basis
             0x48, 0xBF, LONG_TO_BYTES(1099511628211),           // mov rdi, 1099511628211           ;     rdi = _FNV_prime
-            0x48, 0xC7, 0xC0, INT_TO_BYTES(16),                 // mov rax, 16                      ;     rax = 16
-            DO_WHILE_GT_ZERO(                                   //                                  ;     do {
-                0x66, 0x33, 0x34, 0x24,                         // xor si, word ptr [rsp]           ;         rsi ^= [rsp]  // [rsp] is the head of the buffer
-                0x48, 0xFF, 0xC4,                               // inc rsp                          ;         rsp++         // move to the next byte in the buffer
-                0x48, 0x0F, 0xAF, 0xF7,                         // imul rsi, rdi                    ;         rsi *= rdi    // randomize by multiplying in a large prime
-                0x48, 0xFF, 0xC8                                // dec rax                          ;         rax--         // decrement loop variable
+            0x48, 0xC7, 0xC0, INT_TO_BYTES(8),                  // mov rax, 8                       ;     rax = 8
+            DO_WHILE_NONZERO(                                   //                                  ;     do {
+                0x66, 0x33, 0x74, 0x04,                         // xor si, word ptr [rsp + rax]     ;         rsi ^= [rsp + rax]    // [rsp + rax] is the 'rax'th element of the buffer
+                0x48, 0x0F, 0xAF, 0xF7,                         // imul rsi, rdi                    ;         rsi *= rdi            // randomize by multiplying in a large prime
+                0x48, 0xFF, 0xC8                                // dec rax                          ;         rax--                 // decrement loop variable
             ),                                                  //                                  ;     } while (rax > 0)
+            0x48, 0x83, 0xC4, 0x10,                             // add rsp, 10                      ;     Restore the stack pointer (freeing our hash buffer)
             0x48, 0xBF, LONG_TO_BYTES(_rngSeedArray),           // mov rdi, _rngSeedArray           ;     Load in the table of RNG seeds
             0x4A, 0x8B, 0x04, 0xC7,                             // mov rax, qword ptr [rdi + r8*8]  ;     Save the *previous* seed value as the return value (rax)
             0x4A, 0x89, 0x34, 0xC7                              // mov qword ptr [rdi + r8*8], rsi  ;     Save back the *new* seed value
@@ -214,13 +213,24 @@ bool Trainer::FindAllRngFunctions() {
         { RngClass::DoNotTamper, "44 0F 28 D8 EB 3A", -4 }, // bool FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.AddGroupItems()
         { RngClass::DoNotTamper, "44 0F 28 D0 E9 80 00 00 00", -4 }, // bool FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.AddGroupItems()
         { RngClass::DoNotTamper, "44 0F 28 D0 EB 3A", -4 }, // bool FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.AddGroupItems()
-        // 0x18208fbc9 is next
-
-
-
-        // There are 79 of these. Strap in.
-
-
+        { RngClass::DoNotTamper, "0F 28 F0 EB 69", -4 }, // BuildVolumeSpots FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetSpot()
+        { RngClass::DoNotTamper, "0F 28 F0 EB 38", -4 }, // BuildVolumeSpots FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetSpot()
+        { RngClass::DoNotTamper, "1E F3 0F 10 49 04", 14 }, // float FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetRegionNextValue()
+        { RngClass::DoNotTamper, "44 0F 28 C0 EB 3A", -4 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS()
+        { RngClass::DoNotTamper, "0F 28 F8 EB 39", -4 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS()
+        { RngClass::DoNotTamper, "0F 29 B4 24 C0 00 00 00 89", 48 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS()
+        { RngClass::DoNotTamper, "75 1D F3 0F 10 4B 60", 22 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS()
+        { RngClass::DoNotTamper, "75 1D F3 0F 10 4B 6C", 22 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS()
+        { RngClass::DoNotTamper, "75 1D F3 0F 10 4B 78", 22 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS()
+        { RngClass::DoNotTamper, "75 23 F3 0F 10 8B B0 00 00 00", 28 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS()
+        { RngClass::DoNotTamper, "75 23 F3 0F 10 8B BC 00 00 00", 28 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS()
+        { RngClass::DoNotTamper, "75 20 F3 0F 10 8B C8 00 00 00", 25 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS()
+        { RngClass::DoNotTamper, "75 0D F3 0F 10 4D 8B", 11 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS630()
+        { RngClass::DoNotTamper, "75 46 F3 0F 10 4D 9B", 11 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS630()
+        { RngClass::DoNotTamper, "F3 0F 11 46 08 66", -11 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS630()
+        { RngClass::DoNotTamper, "F3 0F 11 07 66 0F 7F 75 B7", -11 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS630()
+        { RngClass::DoNotTamper, "F3 0F 11 47 04 66", -11 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS630()
+        { RngClass::DoNotTamper, "F3 0F 11 47 08 66", -11 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.GetTRS630()
     };
 
     for (auto& sigScan : _sigScans1) {
@@ -239,14 +249,6 @@ bool Trainer::FindAllRngFunctions() {
         _memory->AddSigScan(sigScan.GetScanBytes(), [&sigScan](int64_t offset, int index, const std::vector<uint8_t>& data) {
             sigScan.foundAddress = offset + index + sigScan.offsetFromScan;
             sigScan.targetFunction = Memory::ReadStaticInt(offset, index + sigScan.offsetFromScan, data);
-            if (sigScan.targetFunction != 0x00000000023fcc00) {
-                int i = sigScan.offsetFromScan;
-                for (; i < 100; i++) {
-                    auto targetFunction = Memory::ReadStaticInt(offset, index + i, data);
-                    if (targetFunction == 0x00000000023fcc00) break;
-                }
-                assert(false);
-            }
         });
     }
 
