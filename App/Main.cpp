@@ -18,6 +18,7 @@
 #define SET_SEED_TRADING            0x408
 #define SET_SEED_DERIGIBLOCK        0x409
 #define SET_SEED_SLOTMACHINE        0x40A
+#define SET_SEED_ALL                0x40B
 
 
 #define SET_BEHAVIOR_UNKNOWN        0x411
@@ -30,11 +31,12 @@
 #define SET_BEHAVIOR_TRADING        0x418
 #define SET_BEHAVIOR_DERIGIBLOCK    0x419
 #define SET_BEHAVIOR_SLOTMACHINE    0x41A
+#define SET_BEHAVIOR_ALL            0x41B
 
 // Globals
 HWND g_hwnd;
-HWND g_seedInputs[Trainer::RngClass::NumEntries] = {};
-HWND g_behaviorInputs[Trainer::RngClass::NumEntries] = {};
+HWND g_seedInputs[Trainer::RngClass::NumEntries + 1] = {};
+HWND g_behaviorInputs[Trainer::RngClass::NumEntries + 1] = {};
 HINSTANCE g_hInstance;
 std::shared_ptr<Trainer> g_trainer;
 
@@ -135,6 +137,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     Trainer::RngClass rngClass = (Trainer::RngClass)(command - SET_SEED_UNKNOWN);
                     __int64 seed = std::stoull(GetWindowString(g_seedInputs[rngClass]));
                     trainer->SetSeed(rngClass, seed);
+                } else if (command == SET_SEED_ALL) {
+                    __int64 seed = std::stoull(GetWindowString(g_seedInputs[Trainer::RngClass::NumEntries]));
+                    trainer->SetAllSeeds(seed);
+                    for (HWND hwnd : g_seedInputs) SetStringText(hwnd, std::to_string(seed));
                 } else if (command >= SET_BEHAVIOR_UNKNOWN && command < SET_BEHAVIOR_UNKNOWN + Trainer::RngClass::NumEntries) {
                     Trainer::RngClass rngClass = (Trainer::RngClass)(command - SET_BEHAVIOR_UNKNOWN);
                     std::wstring behavior = GetWindowString(g_behaviorInputs[rngClass]);
@@ -143,7 +149,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     else if (behavior == L"Randomize") trainer->SetRngBehavior(rngClass, Trainer::RngBehavior::Randomize);
                     else {
                         MessageBoxW(g_hwnd, L"Valid RNG behaviors are:\nConstant, Increment, Randomize", L"Invalid RNG behavior", MB_TASKMODAL | MB_ICONHAND | MB_OK | MB_SETFOREGROUND);
+                        return;
                     }
+                } else if (command == SET_BEHAVIOR_ALL) {
+                    std::wstring behavior = GetWindowString(g_behaviorInputs[Trainer::RngClass::NumEntries]);
+                    if (behavior == L"Constant") trainer->SetAllBehaviors(Trainer::RngBehavior::Constant);
+                    else if (behavior == L"Increment") trainer->SetAllBehaviors(Trainer::RngBehavior::Increment);
+                    else if (behavior == L"Randomize") trainer->SetAllBehaviors(Trainer::RngBehavior::Randomize);
+                    else {
+                        MessageBoxW(g_hwnd, L"Valid RNG behaviors are:\nConstant, Increment, Randomize", L"Invalid RNG behavior", MB_TASKMODAL | MB_ICONHAND | MB_OK | MB_SETFOREGROUND);
+                        return;
+                    }
+                    for (HWND hwnd : g_behaviorInputs) SetStringText(hwnd, behavior);
                 }
             });
             t.detach();
@@ -204,15 +221,14 @@ HWND CreateText(int& x, int& y, int width, LPCWSTR defaultText = L"", __int64 me
 
 void CreateComponents() {
     // g_trainer->SetAllSeeds(std::vector<__int64>(Trainer::RngClass::NumEntries, 42));
-    // g_trainer->SetAllBehaviors(std::vector<Trainer::RngBehavior>(Trainer::RngClass::NumEntries, Trainer::RngBehavior::Constant));
 
-    std::vector<const wchar_t*> categories = {L"Unknown", L"DoNotTamper", L"BirdPathing", L"Rarity", L"Drafting", L"Items", L"DogSwapper", L"Trading", L"Derigiblock", L"SlotMachine"};
+    std::vector<const wchar_t*> categories = {L"Unknown", L"DoNotTamper", L"BirdPathing", L"Rarity", L"Drafting", L"Items", L"DogSwapper", L"Trading", L"Derigiblock", L"SlotMachine", L"All"};
     int y = 10;
     for (int i = 0; i < categories.size(); i++) {
         int x = 10;
         CreateLabel(x, y + 5, 100, categories[i]);
         CreateLabel(x, y + 5, 40, L"Seed:");
-        g_seedInputs[i] = CreateText(x, y, 100, L"");
+        g_seedInputs[i] = CreateText(x, y, 100, L"0");
         CreateButton(x, y, 40, L"Set", SET_SEED_UNKNOWN + i);
 
         x += 10;
@@ -260,6 +276,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     if (!g_trainer) {
         MessageBoxW(g_hwnd, L"Game is not running or already injected", L"Trainer failed to start", MB_TASKMODAL | MB_ICONHAND | MB_OK | MB_SETFOREGROUND);
     }
+
+    if (g_trainer) g_trainer->SetAllBehaviors(Trainer::RngBehavior::Constant);
 
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
