@@ -59,7 +59,7 @@ void Trainer::InjectCustomRng() {
             0x48, 0xC7, 0xC0, INT_TO_BYTES(16),                 // mov rax, 16                      ;     rax = 16
             DO_WHILE_GT_ZERO(                                   //                                  ;     do {
                 0x66, 0x33, 0x34, 0x24,                         // xor si, word ptr [rsp]           ;         rsi ^= [rsp]  // [rsp] is the head of the buffer
-                0x48, 0xFF, 0xCC,                               // dec rsp                          ;         rsp--         // move to the next byte in the buffer
+                0x48, 0xFF, 0xC4,                               // inc rsp                          ;         rsp++         // move to the next byte in the buffer
                 0x48, 0x0F, 0xAF, 0xF7,                         // imul rsi, rdi                    ;         rsi *= rdi    // randomize by multiplying in a large prime
                 0x48, 0xFF, 0xC8                                // dec rax                          ;         rax--         // decrement loop variable
             ),                                                  //                                  ;     } while (rax > 0)
@@ -84,7 +84,7 @@ void Trainer::InjectCustomRng() {
     std::vector<byte> floatRngInstructions = {
         0x51,                                                   // push rcx                         ; Preserve rcx and rdx
         0x52,                                                   // push rdx                         ; 
-        0x48, 0x83, 0xC4, 0x10,                                 // add rsp, 10                      ; Allocate space for our local variables, while staying fpu aligned
+        0x48, 0x83, 0xEC, 0x10,                                 // sub rsp, 10                      ; Allocate space for our local variables, while staying fpu aligned
         0xF3, 0x0F, 0x11, 0x14, 0x24,                           // movss [rsp], xmm2                ; Save xmm2 (we need this for scratch space)
         0xB9, INT_TO_BYTES(0x0000),                             // mov ecx, 0                       ; Set the arguments for the integer RNG function
         0xBA, INT_TO_BYTES(0xFFFF),                             // mov edx, 65536                   ; 
@@ -99,7 +99,7 @@ void Trainer::InjectCustomRng() {
         0xF3, 0x0F, 0x59, 0xD1,                                 // mulss xmm2, xmm1                 ; Scale up our random value to the size of the float range
         0xF3, 0x0F, 0x58, 0xC2,                                 // addss xmm0, xmm2                 ; Add the random value to the minimum to get our final result in xmm0
         0xF3, 0x0F, 0x10, 0x14, 0x24,                           // movss xmm2, [rsp]                ; Restore xmm2 from our saved location
-        0x48, 0x83, 0xEC, 0x10,                                 // sub rsp, 10                      ; Restore the stack pointer (freeing our local variables)
+        0x48, 0x83, 0xC4, 0x10,                                 // add rsp, 10                      ; Restore the stack pointer (freeing our local variables)
         0x5A,                                                   // pop rdx                          ; Restore rcx and rdx
         0x59,                                                   // pop rcx                          ;
         0xC3,                                                   // ret                              ;
@@ -325,12 +325,12 @@ void Trainer::OverwriteRngFunctions() {
         SKIP(0x41, 0xB0, 0x08),                                     // mov r8b, 8                   ; RngClass.Derigiblock
         SKIP(0x41, 0xB0, 0x09),                                     // mov r8b, 9                   ; RngClass.SlotMachine
 
-        0x48, 0x83, 0xC4, 0x10,                                     // add rsp, 10                  ; Allocate space for our local variables, while staying fpu aligned
+        0x48, 0x83, 0xEC, 0x10,                                     // sub rsp, 0x10                ; Allocate space for our local variables, while staying fpu aligned
         0xC7, 0x44, 0x24, 0x00, INT_TO_BYTES(0x00000000),           // mov dword ptr [rsp], 0.0f	; Store a float on the stack (floats cannot be handled as immediate values)
         0xF3, 0x0F, 0x10, 0x04, 0x24,                               // movss xmm0, [rsp]            ; Move the float into xmm0
         0xC7, 0x44, 0x24, 0x00, INT_TO_BYTES(0x3f800000),           // mov dword ptr [rsp], 1.0f	; Store a float on the stack (floats cannot be handled as immediate values)
         0xF3, 0x0F, 0x10, 0x0C, 0x24,                               // movss xmm1, [rsp]            ; Move the float into xmm1
-        0x48, 0x83, 0xEC, 0x10,                                     // sub rsp, 0x10                ; Restore the stack pointer (freeing our local variables)
+        0x48, 0x83, 0xC4, 0x10,                                     // add rsp, 10                  ; Restore the stack pointer (freeing our local variables)
         0x48, 0xB8, LONG_TO_BYTES(_floatRngFunction),               // mov rax, _floatRngFunction   ; Load the address of the generic floating-point function, after RngClass is set
         0xFF, 0xE0,                                                 // jmp rax                      ; Jump to it (tail call elision)
     });
