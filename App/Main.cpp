@@ -8,10 +8,33 @@
 
 #include <unordered_set>
 
-#define SET_SEED            0x401
+#define SET_SEED_UNKNOWN            0x401
+#define SET_SEED_DONOTTAMPER        0x402
+#define SET_SEED_BIRDPATHING        0x403
+#define SET_SEED_RARITY             0x404
+#define SET_SEED_DRAFTING           0x405
+#define SET_SEED_ITEMS              0x406
+#define SET_SEED_DOGSWAPPER         0x407
+#define SET_SEED_TRADING            0x408
+#define SET_SEED_DERIGIBLOCK        0x409
+#define SET_SEED_SLOTMACHINE        0x40A
+
+
+#define SET_BEHAVIOR_UNKNOWN        0x411
+#define SET_BEHAVIOR_DONOTTAMPER    0x412
+#define SET_BEHAVIOR_BIRDPATHING    0x413
+#define SET_BEHAVIOR_RARITY         0x414
+#define SET_BEHAVIOR_DRAFTING       0x415
+#define SET_BEHAVIOR_ITEMS          0x416
+#define SET_BEHAVIOR_DOGSWAPPER     0x417
+#define SET_BEHAVIOR_TRADING        0x418
+#define SET_BEHAVIOR_DERIGIBLOCK    0x419
+#define SET_BEHAVIOR_SLOTMACHINE    0x41A
 
 // Globals
 HWND g_hwnd;
+HWND g_seedInputs[Trainer::RngClass::NumEntries] = {};
+HWND g_behaviorInputs[Trainer::RngClass::NumEntries] = {};
 HINSTANCE g_hInstance;
 std::shared_ptr<Trainer> g_trainer;
 
@@ -108,10 +131,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 SetCurrentThreadName(L"Command Helper");
 
                 WORD command = LOWORD(wParam);
-                if (command == SET_SEED) {
-                    // g_savedCameraPos = trainer->GetCameraPos();
-                    // g_savedCameraAng = trainer->GetCameraAng();
-                    // SetPosAndAngText(g_savedPos, g_savedCameraPos, g_savedCameraAng);
+                if (command >= SET_SEED_UNKNOWN && command < SET_SEED_UNKNOWN + Trainer::RngClass::NumEntries) {
+                    Trainer::RngClass rngClass = (Trainer::RngClass)(command - SET_SEED_UNKNOWN);
+                    __int64 seed = std::stoull(GetWindowString(g_seedInputs[rngClass]));
+                    trainer->SetSeed(rngClass, seed);
+                } else if (command >= SET_BEHAVIOR_UNKNOWN && command < SET_BEHAVIOR_UNKNOWN + Trainer::RngClass::NumEntries) {
+                    Trainer::RngClass rngClass = (Trainer::RngClass)(command - SET_BEHAVIOR_UNKNOWN);
+                    std::wstring behavior = GetWindowString(g_behaviorInputs[rngClass]);
+                    if (behavior == L"Constant") trainer->SetRngBehavior(rngClass, Trainer::RngBehavior::Constant);
+                    else if (behavior == L"Increment") trainer->SetRngBehavior(rngClass, Trainer::RngBehavior::Increment);
+                    else if (behavior == L"Randomize") trainer->SetRngBehavior(rngClass, Trainer::RngBehavior::Randomize);
+                    else {
+                        MessageBoxW(g_hwnd, L"Valid RNG behaviors are:\nConstant, Increment, Randomize", L"Invalid RNG behavior", MB_TASKMODAL | MB_ICONHAND | MB_OK | MB_SETFOREGROUND);
+                    }
                 }
             });
             t.detach();
@@ -121,33 +153,33 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
     return DefWindowProc(hwnd, message, wParam, lParam);
 }
 
-HWND CreateLabel(int x, int y, int width, int height, LPCWSTR text = L"", __int64 message = 0) {
-    return CreateWindow(L"STATIC", text,
+HWND CreateLabel(int& x, int y, int width, int height, LPCWSTR text = L"", __int64 message = 0) {
+    HWND label = CreateWindow(L"STATIC", text,
         WS_TABSTOP | WS_VISIBLE | WS_CHILD | SS_LEFT | SS_NOTIFY,
         x, y, width, height,
         g_hwnd, (HMENU)message, g_hInstance, NULL);
+    x += width;
+    return label;
 }
 
-HWND CreateLabel(int x, int y, int width, LPCWSTR text, __int64 message = 0) {
+HWND CreateLabel(int& x, int y, int width, LPCWSTR text, __int64 message = 0) {
     return CreateLabel(x, y, width, 16, text, message);
 }
 
-HWND CreateButton(int x, int& y, int width, LPCWSTR text, __int64 message) {
+HWND CreateButton(int& x, int& y, int width, LPCWSTR text, __int64 message) {
     HWND button = CreateWindow(L"BUTTON", text,
         WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
         x, y, width, 26,
         g_hwnd, (HMENU)message, g_hInstance, NULL);
-    y += 30;
-
+    x += width;
     return button;
 }
 
-HWND CreateCheckbox(int x, int& y, __int64 message) {
+HWND CreateCheckbox(int& x, int& y, __int64 message) {
     HWND checkbox = CreateWindow(L"BUTTON", NULL,
         WS_VISIBLE | WS_CHILD | BS_CHECKBOX,
         x, y + 2, 12, 12,
         g_hwnd, (HMENU)message, g_hInstance, NULL);
-    y += 20;
     return checkbox;
 }
 
@@ -155,28 +187,42 @@ HWND CreateCheckbox(int x, int& y, __int64 message) {
 std::pair<HWND, HWND> CreateLabelAndCheckbox(int x, int& y, int width, LPCWSTR text, __int64 message) {
     // We need a distinct message (HMENU) for the label so that when we call CheckDlgButton it targets the checkbox, not the label.
     // However, we only use the low word (bottom 2 bytes) for logic, so we can safely modify the high word to make it distinct.
-    auto label = CreateLabel(x + 20, y, width, text, message + 0x10000);
+    auto label = CreateLabel(x, y, width, text, message + 0x10000);
 
     auto checkbox = CreateCheckbox(x, y, message);
     return {label, checkbox};
 }
 
-HWND CreateText(int x, int& y, int width, LPCWSTR defaultText = L"", __int64 message = NULL) {
+HWND CreateText(int& x, int& y, int width, LPCWSTR defaultText = L"", __int64 message = NULL) {
     HWND text = CreateWindow(MSFTEDIT_CLASS, defaultText,
         WS_TABSTOP | WS_VISIBLE | WS_CHILD | WS_BORDER,
         x, y, width, 26,
         g_hwnd, (HMENU)message, g_hInstance, NULL);
-    y += 30;
+    x += width;
     return text;
 }
 
 void CreateComponents() {
-    int x = 10;
-    int y = 10;
+    // g_trainer->SetAllSeeds(std::vector<__int64>(Trainer::RngClass::NumEntries, 42));
+    // g_trainer->SetAllBehaviors(std::vector<Trainer::RngBehavior>(Trainer::RngClass::NumEntries, Trainer::RngBehavior::Constant));
 
-    CreateText(x, y, 100, L"Seed");
-    y -= 30;
-    CreateButton(x + 120, y, 100, L"Set seed", SET_SEED);
+    std::vector<const wchar_t*> categories = {L"Unknown", L"DoNotTamper", L"BirdPathing", L"Rarity", L"Drafting", L"Items", L"DogSwapper", L"Trading", L"Derigiblock", L"SlotMachine"};
+    int y = 10;
+    for (int i = 0; i < categories.size(); i++) {
+        int x = 10;
+        CreateLabel(x, y + 5, 100, categories[i]);
+        CreateLabel(x, y + 5, 40, L"Seed:");
+        g_seedInputs[i] = CreateText(x, y, 100, L"");
+        CreateButton(x, y, 40, L"Set", SET_SEED_UNKNOWN + i);
+
+        x += 10;
+
+        CreateLabel(x, y + 5, 65, L"Behavior:");
+        g_behaviorInputs[i] = CreateText(x, y, 80, L"Constant");
+        CreateButton(x, y, 40, L"Set", SET_BEHAVIOR_UNKNOWN + i);
+
+        y += 30;
+    }
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow) {
@@ -201,7 +247,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     GetClientRect(GetDesktopWindow(), &rect);
     g_hwnd = CreateWindow(WINDOW_CLASS, WINDOW_TITLE,
         WS_SYSMENU | WS_MINIMIZEBOX,
-        rect.right - 550, 200, 500, 500,
+        rect.right - 750, 200, 650, 400,
         nullptr, nullptr, hInstance, nullptr);
     ShowWindow(g_hwnd, nCmdShow);
     UpdateWindow(g_hwnd);
@@ -209,8 +255,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
     CreateComponents();
 
-    auto bluePrince = std::make_unique<Memory>(L"BLUE PRINCE.exe");
-    g_trainer = std::make_shared<Trainer>(std::move(bluePrince));
+    auto bluePrince = std::make_shared<Memory>(L"BLUE PRINCE.exe");
+    g_trainer = Trainer::Create(bluePrince);
+    if (!g_trainer) {
+        MessageBoxW(g_hwnd, L"Game is not running or already injected", L"Trainer failed to start", MB_TASKMODAL | MB_ICONHAND | MB_OK | MB_SETFOREGROUND);
+    }
 
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {

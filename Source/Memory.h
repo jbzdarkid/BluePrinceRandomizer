@@ -21,10 +21,6 @@ using byte = unsigned char;
 	static_cast<byte>((val & 0x00FF0000) >> 0x10), \
 	static_cast<byte>((val & 0xFF000000) >> 0x18)
 
-static int _float_to_bytes_placeholder = 0;
-#define FLOAT_TO_BYTES(val) \
-    ((_float_to_bytes_placeholder = val && false) || INT_TO_BYTES(*(int*)(&_float_to_bytes_placeholder)))
-
 #define IF_GE(...) __VA_ARGS__, 0x72 // jb
 #define IF_LT(...) __VA_ARGS__, 0x73 // jae
 #define IF_NE(...) __VA_ARGS__, 0x74 // je
@@ -56,24 +52,18 @@ public:
     [[nodiscard]] size_t ExecuteSigScans();
 
     template<class T>
-    inline std::vector<T> ReadData(const std::vector<__int64>& offsets, size_t numItems) {
+    inline std::vector<T> ReadData(const std::vector<__int64>& offsets, size_t numItems, bool absolute=false) {
         std::vector<T> data(numItems);
         if (!_handle) return data;
-        ReadDataInternal(&data[0], ComputeOffset(offsets), numItems * sizeof(T));
+        ReadDataInternal(&data[0], ComputeOffset(offsets, absolute), numItems * sizeof(T));
         return data;
     }
-    template<class T>
-    inline std::vector<T> ReadAbsoluteData(const std::vector<__int64>& offsets, size_t numItems) {
-        std::vector<T> data(numItems);
-        if (!_handle) return data;
-        ReadDataInternal(&data[0], ComputeOffset(offsets, true), numItems * sizeof(T));
-        return data;
-    }
+
     std::string ReadString(const std::vector<__int64>& offsets);
 
     template <class T>
-    inline void WriteData(const std::vector<__int64>& offsets, const std::vector<T>& data) {
-        WriteDataInternal(&data[0], ComputeOffset(offsets), sizeof(T) * data.size());
+    inline void WriteData(const std::vector<__int64>& offsets, const std::vector<T>& data, bool absolute=false) {
+        WriteDataInternal(&data[0], ComputeOffset(offsets, absolute), sizeof(T) * data.size());
     }
 
     uintptr_t AllocateArray(__int64 size);

@@ -17,6 +17,7 @@ Memory::Memory(const std::wstring& processName) : _processName(processName) {
         }
     }
     assert(_handle);
+    if (!_handle) return;
 
     std::tie(_baseAddress, _endOfModule) = DebugUtils::GetModuleBounds(_handle);
     assert(_baseAddress);
@@ -127,7 +128,7 @@ std::string Memory::ReadString(const std::vector<__int64>& offsets) {
     std::vector<char> tmp;
     auto nullTerminator = tmp.begin(); // Value is only for type information.
     for (size_t maxLength = (1 << 6); maxLength < (1 << 10); maxLength *= 2) {
-        tmp = ReadAbsoluteData<char>({charAddr}, maxLength);
+        tmp = ReadData<char>({charAddr}, maxLength, true);
         nullTerminator = std::find(tmp.begin(), tmp.end(), '\0');
         // If a null terminator is found, we will strip any trailing data after it.
         if (nullTerminator != tmp.end()) break;
