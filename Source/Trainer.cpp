@@ -55,13 +55,13 @@ void Trainer::InjectCustomRng() {
             0x56,                                               // push rsi                         ;     Add our RNG seed data to the hash buffer
             0x48, 0xBE, LONG_TO_BYTES(14695981039346656037),    // mov rsi, 14695981039346656037    ;     rsi = _FNV_offset_basis
             0x48, 0xBF, LONG_TO_BYTES(1099511628211),           // mov rdi, 1099511628211           ;     rdi = _FNV_prime
-            0x48, 0xC7, 0xC0, INT_TO_BYTES(8),                  // mov rax, 8                       ;     rax = 8
+            0x48, 0xC7, 0xC0, INT_TO_BYTES(8),                  // mov rax, 8                       ;     rax = 8                   // We pushed an 8-byte register onto the stack, so the hash buffer size is 8.
             DO_WHILE_NONZERO(                                   //                                  ;     do {
-                0x66, 0x33, 0x74, 0x04,                         // xor si, word ptr [rsp + rax]     ;         rsi ^= [rsp + rax]    // [rsp + rax] is the 'rax'th element of the buffer
-                0x48, 0x0F, 0xAF, 0xF7,                         // imul rsi, rdi                    ;         rsi *= rdi            // randomize by multiplying in a large prime
-                0x48, 0xFF, 0xC8                                // dec rax                          ;         rax--                 // decrement loop variable
+                0x40, 0x32, 0x74, 0x04, 0xF8,                   // xor sil, byte ptr [rsp+rax-8]    ;         rdi = [rsp + rax - 8] // XOR in a byte from the buffer
+                0x48, 0x0F, 0xAF, 0xF7,                         // imul rsi, rdi                    ;         rsi *= rdi            // Multiply in a large prime
+                0x48, 0xFF, 0xC8                                // dec rax                          ;         rax--                 // Decrement loop variable (buffer size)
             ),                                                  //                                  ;     } while (rax > 0)
-            0x48, 0x83, 0xC4, 0x10,                             // add rsp, 10                      ;     Restore the stack pointer (freeing our hash buffer)
+            0x48, 0x83, 0xC4, 0x8,                              // add rsp, 8                       ;     Restore the stack pointer (freeing our hash buffer)
             0x48, 0xBF, LONG_TO_BYTES(_rngSeedArray),           // mov rdi, _rngSeedArray           ;     Load in the table of RNG seeds
             0x4A, 0x8B, 0x04, 0xC7,                             // mov rax, qword ptr [rdi + r8*8]  ;     Save the *previous* seed value as the return value (rax)
             0x4A, 0x89, 0x34, 0xC7                              // mov qword ptr [rdi + r8*8], rsi  ;     Save back the *new* seed value
