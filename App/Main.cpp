@@ -33,10 +33,13 @@
 #define SET_BEHAVIOR_SLOTMACHINE    0x41A
 #define SET_BEHAVIOR_ALL            0x41B
 
+#define LOAD_DECKLISTS              0x420
+
 // Globals
 HWND g_hwnd;
 HWND g_seedInputs[Trainer::RngClass::NumEntries + 1] = {};
 HWND g_behaviorInputs[Trainer::RngClass::NumEntries + 1] = {};
+HWND g_deckLists[3] = {};
 HINSTANCE g_hInstance;
 std::shared_ptr<Trainer> g_trainer;
 
@@ -161,6 +164,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                         return;
                     }
                     for (HWND hwnd : g_behaviorInputs) SetStringText(hwnd, behavior);
+                } else if (command == LOAD_DECKLISTS) {
+                    std::vector<std::vector<std::wstring>> decks = trainer->GetDecks();
+                    for (int i = 0; i < 3; i++) {
+                        std::wstring list;
+                        for (const std::wstring& card : decks[i]) list += card + L'\n';
+                        SetStringText(g_deckLists[i], list);
+                    }
                 }
             });
             t.detach();
@@ -237,6 +247,16 @@ void CreateComponents() {
 
         y += 30;
     }
+
+    int x = 10;
+    CreateButton(x, y, 100, L"Load decks", LOAD_DECKLISTS);
+
+    for (int i = 0; i < 3; i++) {
+        g_deckLists[i] = CreateWindow(L"STATIC", L"",
+            WS_TABSTOP | WS_VISIBLE | WS_CHILD | SS_LEFT | SS_NOTIFY,
+            10 + i * 110, y, 100, 1000,
+            g_hwnd, (HMENU)NULL, g_hInstance, NULL);
+    }
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow) {
@@ -261,7 +281,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     GetClientRect(GetDesktopWindow(), &rect);
     g_hwnd = CreateWindow(WINDOW_CLASS, WINDOW_TITLE,
         WS_SYSMENU | WS_MINIMIZEBOX,
-        rect.right - 750, 200, 650, 400,
+        rect.right - 750, 200, 650, 1400,
         nullptr, nullptr, hInstance, nullptr);
     ShowWindow(g_hwnd, nCmdShow);
     UpdateWindow(g_hwnd);

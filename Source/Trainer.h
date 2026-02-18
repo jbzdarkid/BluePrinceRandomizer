@@ -26,21 +26,25 @@ public:
         Randomize = 3,
     };
 
-    void SetSeed(RngClass rngClass, __int64 rngValue) { _memory->WriteData<__int64>({_rngSeedArray + rngClass*8}, {rngValue}, true); }
-    void SetAllSeeds(__int64 rngValue) { _memory->WriteData<__int64>({_rngSeedArray}, std::vector<__int64>(RngClass::NumEntries, rngValue), true); }
-    __int64 GetSeed(RngClass rngClass) { return _memory->ReadData<__int64>({_rngSeedArray + rngClass}, 1, true)[0]; }
-    std::vector<__int64> GetAllSeeds() { return _memory->ReadData<__int64>({_rngSeedArray}, RngClass::NumEntries, true); }
+    void SetSeed(RngClass rngClass, __int64 rngValue) { _memory->WriteData<__int64>({_rngSeedArray + rngClass*8}, {rngValue}); }
+    void SetAllSeeds(__int64 rngValue) { _memory->WriteData<__int64>({_rngSeedArray}, std::vector<__int64>(RngClass::NumEntries, rngValue)); }
+    __int64 GetSeed(RngClass rngClass) { return _memory->ReadData<__int64>({_rngSeedArray + rngClass}, 1)[0]; }
+    std::vector<__int64> GetAllSeeds() { return _memory->ReadData<__int64>({_rngSeedArray}, RngClass::NumEntries); }
 
-    void SetRngBehavior(RngClass rngClass, RngBehavior rngBehavior) { _memory->WriteData<RngBehavior>({_rngBehaviors + rngClass}, {rngBehavior}, true); }
-    void SetAllBehaviors(RngBehavior rngBehavior) { _memory->WriteData<RngBehavior>({_rngBehaviors}, std::vector<RngBehavior>(RngClass::NumEntries, rngBehavior), true); }
-    RngBehavior GetRngBehavior(RngClass rngClass)  { return _memory->ReadData<RngBehavior>({_rngBehaviors + rngClass}, 1, true)[0]; }
-    std::vector<RngBehavior> GetAllBehaviors() { return _memory->ReadData<RngBehavior>({_rngBehaviors}, RngClass::NumEntries, true); }
+    void SetRngBehavior(RngClass rngClass, RngBehavior rngBehavior) { _memory->WriteData<RngBehavior>({_rngBehaviors + rngClass}, {rngBehavior}); }
+    void SetAllBehaviors(RngBehavior rngBehavior) { _memory->WriteData<RngBehavior>({_rngBehaviors}, std::vector<RngBehavior>(RngClass::NumEntries, rngBehavior)); }
+    RngBehavior GetRngBehavior(RngClass rngClass)  { return _memory->ReadData<RngBehavior>({_rngBehaviors + rngClass}, 1)[0]; }
+    std::vector<RngBehavior> GetAllBehaviors() { return _memory->ReadData<RngBehavior>({_rngBehaviors}, RngClass::NumEntries); }
+
+    std::vector<std::vector<std::wstring>> GetDecks();
 
 private:
     Trainer() = default;
     void InjectCustomRng();
     bool FindAllRngFunctions();
     void OverwriteRngFunctions();
+    void InjectDraftWatcher();
+    std::vector<wchar_t> ReadBuffer();
 
     struct SigScanTemplate {
         RngClass rngClass = RngClass::Unknown;
@@ -48,24 +52,6 @@ private:
         int offsetFromScan = 0;
         __int64 foundAddress = 0; // Relative to the baseAddress
         __int64 targetFunction = 0; // Relative to the baseAddress
-
-        std::vector<byte> GetScanBytes() {
-            std::vector<byte> bytes;
-            byte b = 0x00;
-            bool halfByte = false;
-            for (char ch : scanHex) {
-                if (ch == ' ') continue;
-
-                static std::string HEX_CHARS = "0123456789ABCDEF";
-                b *= 16;
-                b += (byte)HEX_CHARS.find(ch);
-                if (halfByte) bytes.push_back(b);
-                halfByte = !halfByte;
-            }
-            assert(!halfByte);
-
-            return bytes;
-        }
     };
 
     std::shared_ptr<Memory> _memory;
@@ -77,4 +63,6 @@ private:
     __int64 _rngBehaviors = 0;
     __int64 _intRngFunction = 0;
     __int64 _floatRngFunction = 0;
+    __int64 _buffer = 0;
+    int64_t _bufferSize = 8;
 };

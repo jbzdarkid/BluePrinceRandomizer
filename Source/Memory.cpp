@@ -69,8 +69,30 @@ void Memory::AddSigScan(const std::vector<byte>& scanBytes, const ScanFunc& scan
     }});
 }
 
+void Memory::AddSigScan(const std::string& scanHex, const ScanFunc& scanFunc) {
+    AddSigScan(SigScan::GetScanBytes(scanHex), scanFunc);
+}
+
 void Memory::AddSigScan2(const std::vector<byte>& scanBytes, const ScanFunc2& scanFunc) {
     _sigScans.emplace_back(SigScan{false, scanBytes, scanFunc});
+}
+
+std::vector<byte> Memory::SigScan::GetScanBytes(const std::string& scanHex) {
+    std::vector<byte> bytes;
+    byte b = 0x00;
+    bool halfByte = false;
+    for (char ch : scanHex) {
+        if (ch == ' ') continue;
+
+        static std::string HEX_CHARS = "0123456789ABCDEF";
+        b *= 16;
+        b += (byte)HEX_CHARS.find(ch);
+        if (halfByte) bytes.push_back(b);
+        halfByte = !halfByte;
+    }
+    assert(!halfByte);
+
+    return bytes;
 }
 
 int find(const std::vector<byte>& data, const std::vector<byte>& search) {
@@ -108,7 +130,7 @@ size_t Memory::ExecuteSigScans() {
             if (sigScan.found) continue;
             int index = find(buff, sigScan.bytes);
             if (index == -1) continue;
-            sigScan.found = sigScan.scanFunc(i - _baseAddress, index, buff); // We're expecting i to be relative to the base address here.
+            sigScan.found = sigScan.scanFunc(i, index, buff); // We're expecting i to be relative to the base address here.
             if (sigScan.found) notFound--;
         }
         if (notFound == 0) break;
@@ -128,7 +150,7 @@ std::string Memory::ReadString(const std::vector<__int64>& offsets) {
     std::vector<char> tmp;
     auto nullTerminator = tmp.begin(); // Value is only for type information.
     for (size_t maxLength = (1 << 6); maxLength < (1 << 10); maxLength *= 2) {
-        tmp = ReadData<char>({charAddr}, maxLength, true);
+        tmp = ReadData<char>({charAddr}, maxLength);
         nullTerminator = std::find(tmp.begin(), tmp.end(), '\0');
         // If a null terminator is found, we will strip any trailing data after it.
         if (nullTerminator != tmp.end()) break;
@@ -168,7 +190,7 @@ int32_t Memory::CallFunction(int64_t relativeAddress,
         // This primitive contains both a series of instructions and a buffer for arguments.
         // This allows us to write the instructions once, and then just write our new arguments
         // whenever we need to make another call.
-	    const uint8_t instructions[] = {
+	    uint8_t instructions[] = {
             0x48, 0xBB,                                 // mov rbx,  0 ; 0 will be replaced by the address of the arguments struct
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x48, 0x8B, 0x4B, OFFSET_OF(rcx),           // mov rcx,  args.rcx
@@ -238,7 +260,7 @@ void Memory::WriteDataInternal(const void* buffer, uintptr_t computedOffset, siz
     }
 }
 
-uintptr_t Memory::ComputeOffset(std::vector<__int64> offsets, bool absolute) {
+uintptr_t Memory::ComputeOffset(std::vector<__int64> offsets) {
     assert(offsets.size() > 0);
     assert(offsets.front() != 0);
 
@@ -246,7 +268,7 @@ uintptr_t Memory::ComputeOffset(std::vector<__int64> offsets, bool absolute) {
     const __int64 final_offset = offsets.back();
     offsets.pop_back();
 
-    uintptr_t cumulativeAddress = (absolute ? 0 : _baseAddress);
+    uintptr_t cumulativeAddress = 0;
     for (const __int64 offset : offsets) {
         cumulativeAddress += offset;
 
@@ -279,6 +301,53 @@ uintptr_t Memory::ComputeOffset(std::vector<__int64> offsets, bool absolute) {
         return 0;
     }
     return cumulativeAddress + final_offset;
+}
+
+void Memory::Intercept(const std::string& name, __int64 firstLine, __int64 nextLine, const std::vector<byte>& data, bool writeOriginalCode) {
+    std::vector<byte> jumpBack = {
+        0x41, 0x53,                                 // push r11
+        0x49, 0xBB, LONG_TO_BYTES(firstLine + 15),  // mov r11, firstLine + 15
+        0x41, 0xFF, 0xE3,                           // jmp r11
+    };
+    
+#pragma warning (push)
+#pragma warning (disable: 4530)
+    std::vector<byte> injectionBytes = {0x41, 0x5B}; // pop r11 (before executing code that might need it)
+    injectionBytes.insert(injectionBytes.end(), data.begin(), data.end());
+    injectionBytes.push_back(0x90); // Padding nop
+    std::vector<byte> replacedCode = ReadData<byte>({firstLine}, nextLine - firstLine);
+    if (writeOriginalCode) {
+        injectionBytes.insert(injectionBytes.end(), replacedCode.begin(), replacedCode.end());
+        injectionBytes.push_back(0x90); // Padding nop
+    }
+    injectionBytes.insert(injectionBytes.end(), jumpBack.begin(), jumpBack.end());
+#pragma warning (pop)
+
+    uintptr_t addr = AllocateArray(injectionBytes.size());
+    WriteData<byte>({(__int64)addr}, injectionBytes);
+
+    std::vector<byte> jumpAway = {
+        0x41, 0x53,                         // push r11
+        0x49, 0xBB, LONG_TO_BYTES(addr),    // mov r11, addr
+        0x41, 0xFF, 0xE3,                   // jmp r11
+        0x41, 0x5B,                         // pop r11 (we return to this opcode)
+    };
+    // We need enough space for the jump in the source code
+    assert(static_cast<int>(nextLine - firstLine) >= jumpAway.size());
+
+    // Fill any leftover space with nops
+    for (size_t i=jumpAway.size(); i<static_cast<size_t>(nextLine - firstLine); i++) jumpAway.push_back(0x90);
+    WriteData<byte>({firstLine}, jumpAway);
+
+    _interceptions.push_back({name, firstLine, replacedCode, addr});
+}
+
+void Memory::Unintercept(const std::string& name) {
+    auto search = std::find_if(_interceptions.begin(), _interceptions.end(), [&name](Interception i) { return i.name == name; });
+    if (search != _interceptions.end()) return;
+    Interception interception = *search;
+    WriteData<byte>({interception.firstLine}, interception.replacedCode);
+    VirtualFreeEx(_handle, (void*)interception.addr, 0, MEM_RELEASE);
 }
 
 uintptr_t Memory::AllocateArray(__int64 size) {

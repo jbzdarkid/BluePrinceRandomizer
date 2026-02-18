@@ -24,6 +24,7 @@ using byte = unsigned char;
 #define IF_GE(...) __VA_ARGS__, 0x72 // jb
 #define IF_LT(...) __VA_ARGS__, 0x73 // jae
 #define IF_NE(...) __VA_ARGS__, 0x74 // je
+#define IF_NZ(...) __VA_ARGS__, 0x74 // jz
 #define IF_EQ(...) __VA_ARGS__, 0x75 // jne
 #define IF_GT(...) __VA_ARGS__, 0x76 // jbe
 #define IF_LE(...) __VA_ARGS__, 0x77 // ja
@@ -48,24 +49,27 @@ public:
     using ScanFunc = std::function<void(__int64 offset, int index, const std::vector<byte>& data)>;
     using ScanFunc2 = std::function<bool(__int64 offset, int index, const std::vector<byte>& data)>;
     void AddSigScan(const std::vector<byte>& scanBytes, const ScanFunc& scanFunc);
+    void AddSigScan(const std::string& scanHex, const ScanFunc& scanFunc);
     void AddSigScan2(const std::vector<byte>& scanBytes, const ScanFunc2& scanFunc);
     [[nodiscard]] size_t ExecuteSigScans();
 
     template<class T>
-    inline std::vector<T> ReadData(const std::vector<__int64>& offsets, size_t numItems, bool absolute=false) {
+    inline std::vector<T> ReadData(const std::vector<__int64>& offsets, size_t numItems) {
         std::vector<T> data(numItems);
         if (!_handle) return data;
-        ReadDataInternal(&data[0], ComputeOffset(offsets, absolute), numItems * sizeof(T));
+        ReadDataInternal(&data[0], ComputeOffset(offsets), numItems * sizeof(T));
         return data;
     }
 
     std::string ReadString(const std::vector<__int64>& offsets);
 
     template <class T>
-    inline void WriteData(const std::vector<__int64>& offsets, const std::vector<T>& data, bool absolute=false) {
-        WriteDataInternal(&data[0], ComputeOffset(offsets, absolute), sizeof(T) * data.size());
+    inline void WriteData(const std::vector<__int64>& offsets, const std::vector<T>& data) {
+        WriteDataInternal(&data[0], ComputeOffset(offsets), sizeof(T) * data.size());
     }
 
+    void Intercept(const std::string& name, __int64 firstLine, __int64 nextLine, const std::vector<byte>& data, bool writeOriginalCode = true);
+    void Unintercept(const std::string& name);
     uintptr_t AllocateArray(__int64 size);
 
     // This is the fully typed function -- you mostly won't need to call this.
@@ -80,7 +84,7 @@ public:
 private:
     void ReadDataInternal(void* buffer, const uintptr_t computedOffset, size_t bufferSize);
     void WriteDataInternal(const void* buffer, uintptr_t computedOffset, size_t bufferSize);
-    uintptr_t ComputeOffset(std::vector<__int64> offsets, bool absolute = false);
+    uintptr_t ComputeOffset(std::vector<__int64> offsets);
 
     // Parts of the constructor / StartHeartbeat
     std::wstring _processName;
@@ -100,6 +104,16 @@ private:
         bool found = false;
         std::vector<byte> bytes;
         ScanFunc2 scanFunc;
+
+        static std::vector<byte> GetScanBytes(const std::string& scanHex);
     };
     std::vector<SigScan> _sigScans;
+
+    struct Interception {
+        std::string name;
+        int64_t firstLine;
+        std::vector<byte> replacedCode;
+        uintptr_t addr;
+    };
+    std::vector<Interception> _interceptions;
 };

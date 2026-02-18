@@ -11,6 +11,7 @@ std::shared_ptr<Trainer> Trainer::Create(const std::shared_ptr<Memory>& memory) 
 
     trainer->InjectCustomRng();
     trainer->OverwriteRngFunctions();
+    trainer->InjectDraftWatcher();
 
     return trainer;
 }
@@ -68,8 +69,11 @@ void Trainer::InjectCustomRng() {
         ),                                                      //                                  ; }
         0x89, 0xD6,                                             // mov esi, edx                     ; Copy out the upper limit into esi
         0x29, 0xCE,                                             // sub esi, ecx                     ; Subtract the lower limit to compute the range
-        0x31, 0xD2,                                             // xor edx, edx                     ; Zero out edx (required for division)
-        0xF7, 0xF6,                                             // div esi                          ; Compute edx = (edx:eax) % esi
+        0x31, 0xD2,                                             // xor edx, edx                     ; Zero out edx (required for division, or in case esi is 0)
+        IF_NZ(0x85, 0xF6),                                      // test esi, esi                    ; Compare esi to itself
+        THEN(                                                   //                                  ; if (esi != 0) {
+            0xF7, 0xF6                                          // div esi                          ;   Compute edx = (edx:eax) % esi
+        ),                                                      //                                  ; }
         0x89, 0xC8,                                             // mov eax, ecx                     ; Copy the lower limit into eax
         0x01, 0xD0,                                             // add eax, edx                     ; Add the remainder into eax (our return value)
         0x5F,                                                   // pop rdi                          ; Restore our scratch registers
@@ -78,7 +82,7 @@ void Trainer::InjectCustomRng() {
     };
 
     _intRngFunction = _memory->AllocateArray(intRngInstructions.size());
-    _memory->WriteData<byte>({_intRngFunction}, intRngInstructions, true);
+    _memory->WriteData<byte>({_intRngFunction}, intRngInstructions);
 
     std::vector<byte> floatRngInstructions = {
         0x51,                                                   // push rcx                         ; Preserve rcx and rdx
@@ -105,7 +109,7 @@ void Trainer::InjectCustomRng() {
     };
 
     _floatRngFunction = _memory->AllocateArray(sizeof(floatRngInstructions));
-    _memory->WriteData<byte>({_floatRngFunction}, floatRngInstructions, true);
+    _memory->WriteData<byte>({_floatRngFunction}, floatRngInstructions);
 }
 
 bool Trainer::FindAllRngFunctions() {
@@ -114,6 +118,19 @@ bool Trainer::FindAllRngFunctions() {
     // - First, by the function they're using. This is important for our injection; each function class has a particular expected return type that we must match.
     // - Second, by the usage. This is important for modding, since we care about some of these random values more so than others.
     // I have also annotated the sigscan by the name of the calling function, to help justify the categorization.
+
+    /* TODO: Some call sites use this horrific IL2CPP behavior. I need to rescan for these and... write more injection. Eventually.
+      v95 = qword_18318CDC8;
+      if (!qword_18318CDC8) {
+        v95 = il2cpp_resolve_icall_0("UnityEngine.Random::RandomRangeInt(System.Int32,System.Int32)");
+        if (!v95) {
+          v102 = sub_1802C0F70("UnityEngine.Random::RandomRangeInt(System.Int32,System.Int32)");
+          sub_1802BF150(v102); // some assert
+        }
+        qword_18318CDC8 = v95;
+      }
+      v96 = v95(0, v94); // <-- actual function call here
+    */
 
     // UnityEngine::Random::Random.value => [0.0, 1.0]
     _sigScans1 = {
@@ -234,19 +251,19 @@ bool Trainer::FindAllRngFunctions() {
     };
 
     for (auto& sigScan : _sigScans1) {
-        _memory->AddSigScan(sigScan.GetScanBytes(), [&sigScan](int64_t offset, int index, const std::vector<uint8_t>& data) {
+        _memory->AddSigScan(sigScan.scanHex, [&sigScan](int64_t offset, int index, const std::vector<uint8_t>& data) {
             sigScan.foundAddress = offset + index + sigScan.offsetFromScan;
             sigScan.targetFunction = Memory::ReadStaticInt(offset, index + sigScan.offsetFromScan, data);
         });
     }
     for (auto& sigScan : _sigScans2) {
-        _memory->AddSigScan(sigScan.GetScanBytes(), [&sigScan](int64_t offset, int index, const std::vector<uint8_t>& data) {
+        _memory->AddSigScan(sigScan.scanHex, [&sigScan](int64_t offset, int index, const std::vector<uint8_t>& data) {
             sigScan.foundAddress = offset + index + sigScan.offsetFromScan;
             sigScan.targetFunction = Memory::ReadStaticInt(offset, index + sigScan.offsetFromScan, data);
         });
     }
     for (auto& sigScan : _sigScans3) {
-        _memory->AddSigScan(sigScan.GetScanBytes(), [&sigScan](int64_t offset, int index, const std::vector<uint8_t>& data) {
+        _memory->AddSigScan(sigScan.scanHex, [&sigScan](int64_t offset, int index, const std::vector<uint8_t>& data) {
             sigScan.foundAddress = offset + index + sigScan.offsetFromScan;
             sigScan.targetFunction = Memory::ReadStaticInt(offset, index + sigScan.offsetFromScan, data);
         });
@@ -340,4 +357,112 @@ void Trainer::OverwriteRngFunctions() {
     for (const auto& sigScan : _sigScans1) {
         _memory->WriteData<int>({sigScan.foundAddress}, {(int)(sigScan.targetFunction - sigScan.foundAddress - 4 + 5 * sigScan.rngClass)});
     }
+}
+
+void Trainer::InjectDraftWatcher() {
+    int64_t pickRoomFromSlot = 0;
+    int64_t pickTop = 0;
+    _memory->AddSigScan("48 8B 4C C1 20 48 85 C9 74 1D 45", [&](int64_t offset, int index, const std::vector<uint8_t>& data) {
+        pickRoomFromSlot = offset + index;
+        pickTop = Memory::ReadStaticInt(offset, index + 0x10, data);
+    });
+    size_t numFailedScans = _memory->ExecuteSigScans();
+    if (numFailedScans != 0) return;
+
+    _buffer = _memory->AllocateArray(0x1'000'000); // This is *way* too big, but what the hell ever. We can afford to allocate 1MB to avoid having to think about running out of buffer space.
+    _memory->WriteData<int64_t>({(__int64)_buffer}, {_bufferSize}); // Write initial size so that we don't overwrite the size with the first bytes.
+
+    _memory->Intercept("PickRoomFromSlot", pickRoomFromSlot, pickRoomFromSlot + 20, {
+        0x51,                                   // push rcx                             ; 
+        0x41, 0x50,                             // push r8                              ; 
+        0x41, 0x51,                             // push r9                              ; 
+        0x41, 0x52,                             // push r10                             ; 
+        0x41, 0x53,                             // push r11                             ; 
+        0x41, 0x54,                             // push r12                             ; 
+        0x41, 0x55,                             // push r13                             ; 
+        0x41, 0x56,                             // push r14                             ; 
+        0x41, 0x57,                             // push r15                             ; Push a bunch of registers so we're free to use r8-15 as needed.
+        0x48, 0x8B, 0x4C, 0xC1, 0x20,           // mov rcx,qword ptr ds:[rcx+rax*8+20]  ; rcx = RoomDeck (This is the computation the game uses to determine the correct deck.)
+        0x4C, 0x8B, 0x41, 0x10,                 // mov r8,qword ptr ds:[rcx+10]         ; r8 = RoomDeck.Cards
+        0x45, 0x8B, 0x48, 0x18,                 // mov r9d,qword ptr ds:[r8+18]         ; r9d = List<RoomCard>._size
+        IF_GT(0x45, 0x85, 0xC9),                // test r9d,r9d                         ; 
+        THEN(                                   // if (r9d > 0) {                       ; if (r9d > 0) {
+          0x4D, 0x8B, 0x50, 0x10,               //   mov r10,qword ptr ds:[r8+10]       ;   r10 = List<RoomCard>._items
+          0x49, 0x83, 0xC2, 0x20,               //   add r10,20                         ;   r10 = &_items.vector (the actual data pointer inside a List<T>)
+          0x49, 0xBF, LONG_TO_BYTES(_buffer),   //   mov r15,_buffer                    ;   r15 = _buffer (a shared memory buffer, we will read from here when the game is done choosing decks
+          0x4D, 0x03, 0x3F,                     //   add r15,qword ptr ds:[r15]         ;   r15 += [r15] (adjust forward to account for the current buffer size)
+          DO_WHILE_NONZERO(                     //   do {                               ;   Iterate over all the cards
+            0x4D, 0x8B, 0x1A,                   //     mov r11,qword ptr ds:[r10]       ;     r11 = [r10] (This loads the item at index r9, which is directly pointed to by r10)
+            0x4D, 0x8B, 0x5B, 0x10,             //     mov r11,qword ptr ds:[r11+10]    ;     r11 = RoomCard.Template
+            0x4D, 0x8B, 0x5B, 0x48,             //     mov r11,qword ptr ds:[r11+48]    ;     r11 = RoomTemplate.Headline
+            0x49, 0x83, 0xC3, 0x14,             //     add r11,14                             r11 = &Headline._firstChar
+            DO_WHILE_NONZERO(                   //     do {                             ;     Iterate over all the chars
+              0x66, 0x45, 0x8B, 0x23,           //       mov r12w,word ptr ds:[r11]     ;       r12w = [r11] (dereferencing the wide character in the string)
+              0x66, 0x45, 0x89, 0x27,           //       mov word ptr ds:[r15],r12w     ;       [r15] = r12w (write the wide character into the buffer)
+              0x49, 0x83, 0xC3, 0x02,           //       add r11,2                      ;       r11 += 2 (adjust the string by one wide character)
+              0x49, 0x83, 0xC7, 0x02,           //       add r15,2                      ;       r15 += 2 (adjust the buffer pointer by one wide character)
+              0x66, 0x45, 0x85, 0xE4            //       test r12w,r12w                 ;       check if we reached a null terminator
+            ),                                  //     }                                ;     (done copying string)
+            0x49, 0x83, 0xC2, 0x08,             //     add r10,8                        ;     r10 += 8 (increment to the next card in the list)
+            0x41, 0xFF, 0xC9                    //     dec r9d                          ;     r9d-- (decrement the number of cards remaining)
+          ),                                    //   }                                  ;   (done iterating through cards)
+          0x49, 0x83, 0xC7, 0x02,               //   add r15,2                          ;   r15 += 2 (add a null terminator to indicate end of a deck)
+          0x49, 0xBE, LONG_TO_BYTES(_buffer),   //   mov r14,_buffer                    ;   r14 = _buffer
+          0x4D, 0x29, 0xF7,                     //   sub r15,r14                        ;   r15 -= r14 (compute the delta from the end of the buffer)
+          0x4D, 0x89, 0x3E                      //   mov qword ptr ds:[r14],r15         ;   [r14] = r15 (write back the current buffer size)
+        ),                                      // }                                    ; }
+                                                //                                      ; As we are not writing the original code, we must execute the original code here.
+                                                //                                      ; This is done because the original code had a call which was not feasible.
+        0x4C, 0x8B, 0x41, 0x10,                 // mov r8,qword ptr ds:[rcx+10]         ; r8 = RoomDeck.Cards
+        0x45, 0x8B, 0x48, 0x18,                 // mov r9d,qword ptr ds:[r8+18]         ; r9d = List<RoomCard>._size
+        IF_NE(0x45, 0x85, 0xC9),                // test r9d,r9d                         ;
+        THEN(                                   // if (r9d == 0) {                      ; if (r9d == 0) {
+          0x48, 0x31, 0xC0                      //   xor rax,rax                        ;   rax = 0 (set our return value to null)
+        ),                                      //                                      ; }
+        IF_GT(0x45, 0x85, 0xC9),                // test r9d,r9d                         ;
+        THEN(                                   // if (r9d > 0) {                       ; if (r9d > 0) {
+          0x49, 0xBB, LONG_TO_BYTES(pickTop),   //   mov r11, RoomDeck::PickTop()       ;   r11 = &RoomDeck::PickTop (load an absolute pointer to the function)
+          0x41, 0xFF, 0xD3                      //   call r11                           ;   rax = RoomDeck::PickTop() (call the function to get our return value)
+        ),                                      // }                                    ; }
+        0x41, 0x5F,                             // pop r15                              ; Pop all our used registers to clean up.
+        0x41, 0x5E,                             // pop r14                              ; 
+        0x41, 0x5D,                             // pop r13                              ; 
+        0x41, 0x5C,                             // pop r12                              ; 
+        0x41, 0x5B,                             // pop r11                              ; 
+        0x41, 0x5A,                             // pop r10                              ; 
+        0x41, 0x59,                             // pop r9                               ; 
+        0x41, 0x58,                             // pop r8                               ; 
+        0x59,                                   // pop rcx                              ; 
+    }, /*writeOriginalCode*/ false);
+}
+
+std::vector<wchar_t> Trainer::ReadBuffer() {
+    int64_t newBufferSize = _memory->ReadData<int64_t>({_buffer}, {0x8})[0];
+    if (newBufferSize == _bufferSize) return {};
+    std::vector<wchar_t> rawChars = _memory->ReadData<wchar_t>({_buffer + _bufferSize}, newBufferSize - _bufferSize);
+    _bufferSize = newBufferSize;
+
+    return rawChars;
+}
+
+std::vector<std::vector<std::wstring>> Trainer::GetDecks() {
+    std::vector<wchar_t> buffer = ReadBuffer();
+    size_t i = 0;
+
+    std::vector<std::vector<std::wstring>> decks;
+    while (i < buffer.size()) {
+        std::vector<std::wstring> deck;
+        while (buffer[i] != L'\0') {
+            std::wstring card;
+            while (buffer[i] != L'\0') {
+                card.push_back(buffer[i]);
+                i++;
+            }
+            deck.push_back(card);
+            i++;
+        }
+        decks.push_back(deck);
+    }
+
+    return decks;
 }
