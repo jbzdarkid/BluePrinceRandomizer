@@ -321,7 +321,7 @@ void CreateComponents() {
     }
     y += 30;
 
-    // SetTimer(g_hwnd, LOAD_DECKLISTS, 1000, (TIMERPROC)NULL); // Reload decklists every second
+    SetTimer(g_hwnd, LOAD_DECKLISTS, 1000, (TIMERPROC)NULL); // Reload decklists every second
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow) {
