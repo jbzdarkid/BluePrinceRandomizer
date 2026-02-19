@@ -301,7 +301,6 @@ void CreateComponents() {
     CreateLabel(x, y, deckWidth, L"Deck 3");
     y += 20;
 
-    // TODO: Dropdowns?
     x = 10;
     std::vector<std::wstring> dropdownOptions;
     dropdownOptions.push_back(L"(no override)");
