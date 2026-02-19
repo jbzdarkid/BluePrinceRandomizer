@@ -139,9 +139,9 @@ const std::vector<std::pair<std::wstring, std::wstring>> ROOM_NAMES = {
     {L"Break Room", L"BREAK ROOM" },
     {L"Speakeasy", L"SPEAKEASY" },
     {L"Pool Hall", L"POOL HALL" },
-    {L"Boudoir (obs)", L"BOUDOIR (obs)" }, // TODO: WTF
-    {L"Boudoir (par)", L"BOUDOIR (par)" }, // TODO: WTF
-    {L"Boudoir (walk)", L"BOUDOIR (walk)" }, // TODO: WTF
+    {L"Boudoir (food)", L"BOUDOIR (obs)" },
+    {L"Boudoir (dice)", L"BOUDOIR (par)" },
+    {L"Boudoir (gem)", L"BOUDOIR (walk)" },
     {L"Bunk Room (gems)", L"BUNK ROOM gems" },
     {L"Bunk Room (coins)", L"BUNK ROOM coins" },
     {L"Bunk Room (keys)", L"BUNK ROOM keys" },

@@ -265,8 +265,9 @@ HWND CreateDropdown(int& x, int& y, int width, const std::vector<std::wstring>& 
     x += width;
 
     for (const auto& option : options) {
-        SendMessage(hwnd, (UINT)CB_ADDSTRING, NULL, (LPARAM)option.data()); 
+        SendMessage(hwnd, CB_ADDSTRING, NULL, (LPARAM)option.data()); 
     }
+    SendMessage(hwnd, CB_SETCURSEL, (WPARAM)0, NULL);
 
     return hwnd;
 }

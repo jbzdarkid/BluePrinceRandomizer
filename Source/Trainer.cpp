@@ -387,6 +387,8 @@ void Trainer::InjectDraftWatcher() {
     _memory->Intercept("PickRoomFromSlot", pickRoomFromSlot, pickRoomFromSlot + 20, {
         0x51,                                       // push rcx                             ;
         0x52,                                       // push rdx                             ;
+        0x56,                                       // push rsi                             ;
+        0x57,                                       // push rdi                             ;
         0x41, 0x50,                                 // push r8                              ;
         0x41, 0x51,                                 // push r9                              ;
         0x41, 0x52,                                 // push r10                             ;
@@ -429,18 +431,20 @@ void Trainer::InjectDraftWatcher() {
                                                     //                                      ; We are also running logic here to allow for forced room choices.
                                                     //                                      ;
         0x49, 0xBF, LONG_TO_BYTES(_buffer),         // mov r15,_buffer                      ; r15 = _buffer (a shared memory buffer, we will read from here when the game is done choosing decks
-        0x4D, 0x8D, 0x3C, 0xEF,                     // lea r15,qword ptr ds:[r15+rbp*8]     ; r15 += rbp*8 (rbp has the slot #, so we're reading _buffer[1-3]
+        0x48, 0x8B, 0x8C, 0x24, INT_TO_BYTES(0x1A0),// mov rcx,qword ptr ss:[rsp+1A0]       ; rcx = [rsp + 0x1A0] (saved stack value of RoomDraftContext)
+        0x8B, 0x49, 0x40,                           // mov ecx,qword ptr ds:[rcx+40]        ; ecx = RoomDraftContext.CurrentSlot
+        0x4D, 0x8D, 0x3C, 0xCF,                     // lea r15,qword ptr ds:[r15+rcx*8]     ; r15 += rcx*8 (r15 = _buffer[currentSlot * 8])
         0x4D, 0x8B, 0x37,                           // mov r14,qword ptr ds:[r15]           ; r14 = [r15] (check to see if there's a card override at this slot)
         IF_NZ(0x4D, 0x85, 0xF6),                    // test r14,r14                         ;
         THEN(                                       // if (r14 != 0) {                      ; if (r14 != 0) {
-          0x48, 0x8B, 0x8C, 0x24, INT_TO_BYTES(0x190),// mov rcx,qword ptr ss:[rsp+190]     ;   rcx = [rsp + 0x190] (saved stack value of RoomDraftContext)
+          0x48, 0x8B, 0x8C, 0x24, INT_TO_BYTES(0x1A0),// mov rcx,qword ptr ss:[rsp+1A0]     ;   rcx = [rsp + 0x1A0] (saved stack value of RoomDraftContext)
           0x48, 0x8B, 0x49, 0x10,                   //   mov rcx,qword ptr ds:[rcx+10]      ;   rcx = RoomDraftContext.Database
           0x4C, 0x89, 0xF2,                         //   mov rdx,r14                        ;   rdx = r14 (our room name)
           0x49, 0xBB, LONG_TO_BYTES(getRoomByName), //   mov r11,getRoomByName              ;   r11 = &RoomDatabase.GetRoomByName
           0x41, 0xFF, 0xD3,                         //   call r11                           ;   RoomTemplate rax = RoomDatabase.GetRoomByName(database, name);
           IF_NZ(0x48, 0x85, 0xC0),                  //   test rax,rax                       ;   
           THEN(                                     //   if (rax != 0) {                    ;   if (rax != 0) {
-            0x48, 0x8B, 0x8C, 0x24, INT_TO_BYTES(0x190),// mov rcx,qword ptr ss:[rsp+190]   ;     rcx = [rsp + 0x190] (saved stack value of RoomDraftContext)
+            0x48, 0x8B, 0x8C, 0x24, INT_TO_BYTES(0x1A0),// mov rcx,qword ptr ss:[rsp+1A0]   ;     rcx = [rsp + 0x1A0] (saved stack value of RoomDraftContext)
             0x48, 0x89, 0xC2,                       //     mov rdx,rax                      ;     rdx = rax (pass the room template as arg 2)
             0x49, 0xBB, LONG_TO_BYTES(createCard),  //     mov r11,createCard               ;     r11 = &RoomDraftContext.CreateCard
             0x41, 0xFF, 0xD3                        //     call r11                         ;     RoomCard rax = RoomDraftContext.CreateCard(roomDraftContext, template);
@@ -448,8 +452,7 @@ void Trainer::InjectDraftWatcher() {
         ),                                          // }                                    ; } (Done with override behavior)
         IF_Z(0x4D, 0x85, 0xF6),                     // test r14, r14                        ;
         THEN(                                       // if (r14 == 0) {                      ; if (r14 == 0) {
-          0x4C, 0x8B, 0x41, 0x20,                   //   mov r8,qword ptr ds:[rcx+10]       ;   r8 = RoomDeck.FilteredDeck
-          0x45, 0x8B, 0x48, 0x18,                   //   mov r9d,qword ptr ds:[r8+18]       ;   r9d = List<RoomCard>._size
+          0x45, 0x8B, 0x48, 0x18,                   //   mov r9d,qword ptr ds:[r8+18]       ;   r9d = List<RoomCard>._size (note: r8 is unmodified from our math above)
           IF_NE(0x45, 0x85, 0xC9),                  //   test r9d,r9d                       ;
           THEN(                                     //   if (r9d == 0) {                    ;   if (r9d == 0) {
             0x48, 0x31, 0xC0                        //     xor rax,rax                      ;     rax = 0 (set our return value to null)
@@ -468,6 +471,8 @@ void Trainer::InjectDraftWatcher() {
         0x41, 0x5A,                                 // pop r10                              ;
         0x41, 0x59,                                 // pop r9                               ;
         0x41, 0x58,                                 // pop r8                               ;
+        0x5F,                                       // pop rdi                              ;
+        0x5E,                                       // pop rsi                              ;
         0x5A,                                       // pop rdx                              ;
         0x59,                                       // pop rcx                              ;
     }, /*writeOriginalCode*/ false);
@@ -513,8 +518,23 @@ void Trainer::ForceRoomDraft(const std::wstring& name, int slot) {
         _memory->WriteData<int64_t>({_buffer + 0x8 * slot}, {0});
         return;
     }
-    __int64 addr = _memory->AllocateArray(name.size());
-    std::vector<wchar_t> nameData(name.begin(), name.end());
-    _memory->WriteData<wchar_t>({addr}, nameData);
+    // Annoyingly, we have to allocate a C# String here, which has some extra nonsense.
+    // TODO: I am not actually allocating the vtable pointer. Hopefully C# doesn't mind. If not, I can copy it from a known string offset (?)
+    std::vector<byte> stringBytes = {
+        LONG_TO_BYTES(0), // vtable
+        LONG_TO_BYTES(0), // unused
+        INT_TO_BYTES(name.size()), // size of string
+    };
+    for (wchar_t ch : name) {
+        stringBytes.push_back((ch & 0x00FF) >> 0x00);
+        stringBytes.push_back((ch & 0xFF00) >> 0x08);
+    }
+
+    // Append a null terminator
+    stringBytes.push_back(0x00);
+    stringBytes.push_back(0x00);
+
+    __int64 addr = _memory->AllocateArray(stringBytes.size());
+    _memory->WriteData<byte>({addr}, stringBytes);
     _memory->WriteData<int64_t>({_buffer + 0x8 * slot}, {addr});
 }
