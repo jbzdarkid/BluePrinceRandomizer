@@ -7,6 +7,8 @@
 #include "Trainer.h"
 
 #include <unordered_set>
+#include <map>
+#include "RoomList.h"
 
 #define SET_SEED_UNKNOWN            0x401
 #define SET_SEED_DONOTTAMPER        0x402
@@ -34,12 +36,16 @@
 #define SET_BEHAVIOR_ALL            0x41B
 
 #define LOAD_DECKLISTS              0x420
+#define FORCE_SLOT_1                0x421
+#define FORCE_SLOT_2                0x422
+#define FORCE_SLOT_3                0x423
 
 // Globals
 HWND g_hwnd;
 HWND g_seedInputs[Trainer::RngClass::NumEntries + 1] = {};
 HWND g_behaviorInputs[Trainer::RngClass::NumEntries + 1] = {};
 HWND g_deckLists[3] = {};
+HWND g_forcedSlots[3] = {};
 HINSTANCE g_hInstance;
 std::shared_ptr<Trainer> g_trainer;
 
@@ -126,9 +132,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             SetBkMode((HDC)wParam, OPAQUE);
             static HBRUSH s_solidBrush = CreateSolidBrush(RGB(255, 255, 255));
             return (LRESULT)s_solidBrush;
+        case WM_TIMER:
         case WM_COMMAND:
             // All commands should execute on a background thread, to avoid hanging the UI.
-            std::thread t([trainer = g_trainer, wParam] {
+            std::thread t([trainer = g_trainer, wParam, lParam] {
 #pragma warning (suppress: 4101)
                 void* g_trainer; // Prevent access to the global variable in this scope
 #pragma warning (default: 4101)
@@ -166,10 +173,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     for (HWND hwnd : g_behaviorInputs) SetStringText(hwnd, behavior);
                 } else if (command == LOAD_DECKLISTS) {
                     std::vector<std::vector<std::wstring>> decks = trainer->GetDecks();
-                    for (int i = 0; i < 3; i++) {
+                    int i = 0;
+                    for (const auto& deck : decks) {
                         std::wstring list;
-                        for (const std::wstring& card : decks[i]) list += card + L'\n';
+                        for (const std::wstring& card : decks[i]) {
+                            if (card[0] == L'<') { // Weirdly, some cards have color labels. Remove them.
+                                list += card.substr(15, card.size() - 23) + L'\n';
+                            } else {
+                                list += card + L'\n';
+                            }
+                        }
                         SetStringText(g_deckLists[i], list);
+                        i++;
+                        if (i >= 3) break;
+                    }
+                } else if (command >= FORCE_SLOT_1 && command <= FORCE_SLOT_3) {
+                    auto action = HIWORD(wParam);
+                    int slot = command - FORCE_SLOT_1 + 1;
+                    if (action == CBN_SELCHANGE) {
+                        int selectedIndex = (int)SendMessage((HWND)lParam, (UINT)CB_GETCURSEL, NULL, NULL);
+                        if (selectedIndex == 0) {
+                            trainer->ForceRoomDraft(L"", slot);
+                        } else {
+                            const std::wstring internalName = ROOM_NAMES[selectedIndex - 1].second;
+                            trainer->ForceRoomDraft(internalName, slot);
+                        }
                     }
                 }
             });
@@ -229,9 +257,24 @@ HWND CreateText(int& x, int& y, int width, LPCWSTR defaultText = L"", __int64 me
     return text;
 }
 
+HWND CreateDropdown(int& x, int& y, int width, const std::vector<std::wstring>& options, __int64 message) {
+    HWND hwnd = CreateWindow(WC_COMBOBOX, L"", 
+        CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_CHILD | WS_OVERLAPPED | WS_VISIBLE | WS_VSCROLL,
+        x, y, width - 5, 100,
+        g_hwnd, (HMENU)message, g_hInstance, NULL);
+    x += width;
+
+    for (const auto& option : options) {
+        SendMessage(hwnd, (UINT)CB_ADDSTRING, NULL, (LPARAM)option.data()); 
+    }
+
+    return hwnd;
+}
+
 void CreateComponents() {
-    std::vector<const wchar_t*> categories = {L"Unknown", L"DoNotTamper", L"BirdPathing", L"Rarity", L"Drafting", L"Items", L"DogSwapper", L"Trading", L"Derigiblock", L"SlotMachine", L"All"};
     int y = 10;
+#if DERANDOMIZE
+    std::vector<const wchar_t*> categories = {L"Unknown", L"DoNotTamper", L"BirdPathing", L"Rarity", L"Drafting", L"Items", L"DogSwapper", L"Trading", L"Derigiblock", L"SlotMachine", L"All"};
     for (int i = 0; i < categories.size(); i++) {
         int x = 10;
         CreateLabel(x, y + 5, 100, categories[i]);
@@ -247,16 +290,37 @@ void CreateComponents() {
 
         y += 30;
     }
+    y += 30;
+#endif
 
+    constexpr int deckWidth = 160;
     int x = 10;
-    CreateButton(x, y, 100, L"Load decks", LOAD_DECKLISTS);
+    CreateLabel(x, y, deckWidth, L"Deck 1");
+    CreateLabel(x, y, deckWidth, L"Deck 2");
+    CreateLabel(x, y, deckWidth, L"Deck 3");
+    y += 20;
 
+    // TODO: Dropdowns?
+    x = 10;
+    std::vector<std::wstring> dropdownOptions;
+    dropdownOptions.push_back(L"(no override)");
+    for (const auto& [key, value] : ROOM_NAMES) dropdownOptions.push_back(key);
+
+    g_forcedSlots[0] = CreateDropdown(x, y, deckWidth, dropdownOptions, FORCE_SLOT_1);
+    g_forcedSlots[0] = CreateDropdown(x, y, deckWidth, dropdownOptions, FORCE_SLOT_2);
+    g_forcedSlots[0] = CreateDropdown(x, y, deckWidth, dropdownOptions, FORCE_SLOT_3);
+    y += 25;
+
+    x = 10;
     for (int i = 0; i < 3; i++) {
         g_deckLists[i] = CreateWindow(L"STATIC", L"",
             WS_TABSTOP | WS_VISIBLE | WS_CHILD | SS_LEFT | SS_NOTIFY,
-            10 + i * 110, y, 100, 1000,
+            x + i * deckWidth, y, 120, 300,
             g_hwnd, (HMENU)NULL, g_hInstance, NULL);
     }
+    y += 30;
+
+    // SetTimer(g_hwnd, LOAD_DECKLISTS, 1000, (TIMERPROC)NULL); // Reload decklists every second
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow) {
@@ -277,11 +341,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     };
     RegisterClass(&wndClass);
 
+    int height = 400;
+#if DERANDOMIZE
+    height += 300;
+#endif
+
     RECT rect;
     GetClientRect(GetDesktopWindow(), &rect);
     g_hwnd = CreateWindow(WINDOW_CLASS, WINDOW_TITLE,
         WS_SYSMENU | WS_MINIMIZEBOX,
-        rect.right - 750, 200, 650, 1400,
+        rect.right - 750, 200, 650, height,
         nullptr, nullptr, hInstance, nullptr);
     ShowWindow(g_hwnd, nCmdShow);
     UpdateWindow(g_hwnd);
@@ -294,8 +363,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     if (!g_trainer) {
         MessageBoxW(g_hwnd, L"Game is not running or already injected", L"Trainer failed to start", MB_TASKMODAL | MB_ICONHAND | MB_OK | MB_SETFOREGROUND);
     } else {
-        g_trainer->SetAllSeeds(42); // A seed value of 0 causes a divide-by-zero error. I can probably fix that, if it matters.
+#if DERANDOMIZE
+        g_trainer->SetAllSeeds(42); // A seed value of 0 will stay stuck at 0, I think.
         g_trainer->SetAllBehaviors(Trainer::RngBehavior::Constant);
+#endif
     }
 
     MSG msg;

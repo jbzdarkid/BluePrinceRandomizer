@@ -6,11 +6,16 @@ std::shared_ptr<Trainer> Trainer::Create(const std::shared_ptr<Memory>& memory) 
     auto trainer = std::shared_ptr<Trainer>(new Trainer());
     trainer->_memory = memory;
 
-    bool success = trainer->FindAllRngFunctions();
+    bool success = true;
+
+#if DERANDOMIZE
+    success = trainer->FindAllRngFunctions();
     if (!success) return nullptr;
 
     trainer->InjectCustomRng();
     trainer->OverwriteRngFunctions();
+#endif
+
     trainer->InjectDraftWatcher();
 
     return trainer;
@@ -86,11 +91,11 @@ void Trainer::InjectCustomRng() {
 
     std::vector<byte> floatRngInstructions = {
         0x51,                                                   // push rcx                         ; Preserve rcx and rdx
-        0x52,                                                   // push rdx                         ; 
+        0x52,                                                   // push rdx                         ;
         0x48, 0x83, 0xEC, 0x10,                                 // sub rsp, 10                      ; Allocate space for our local variables, while staying fpu aligned
         0xF3, 0x0F, 0x11, 0x14, 0x24,                           // movss [rsp], xmm2                ; Save xmm2 (we need this for scratch space)
         0xB9, INT_TO_BYTES(0x0000),                             // mov ecx, 0                       ; Set the arguments for the integer RNG function
-        0xBA, INT_TO_BYTES(0xFFFF),                             // mov edx, 65536                   ; 
+        0xBA, INT_TO_BYTES(0xFFFF),                             // mov edx, 65536                   ;
         0x48, 0xB8, LONG_TO_BYTES(_intRngFunction),             // mov rax, _intRngFunction         ; Load the address of our integer RNG function
         0xFF, 0xD0,                                             // call rax                         ; rax = Call it with range [0, 65536)
         0x89, 0x44, 0x24, 0x08,                                 // mov [rsp+8], eax                 ; Move the return value onto the stack
@@ -222,7 +227,7 @@ bool Trainer::FindAllRngFunctions() {
         { RngClass::DoNotTamper, "80 79 08 00 F3 0F 10 01", 19 }, // float FluffyUnderware::DevTools::FloatRegion::FloatRegion.Next()
         { RngClass::DoNotTamper, "84 05 00 00 80 78 1C 00 75 0A", 34 }, // AudioSource SoundeR::AudioEmitter::AudioEmitter.PlaySoundAtPosition(AudioCollectionAsset collection, Vector3 worldPosition, bool attachToParent)
         { RngClass::DoNotTamper, "47 05 00 00 80 78 1C 00 75 0A", 34 }, // AudioSource SoundeR::AudioEmitter::AudioEmitter.PlaySoundAtPosition(AudioCollectionAsset collection, Vector3 worldPosition, bool attachToParent)
-        { RngClass::DoNotTamper, "73 05 00 00 80 78 1C 00 75 0A", 34 }, // AudioSource SoundeR::AudioEmitter::AudioEmitter.PlaySoundAtPosition(AudioCollectionAsset collection, Vector3 worldPosition, int index, bool attachToParent) 
+        { RngClass::DoNotTamper, "73 05 00 00 80 78 1C 00 75 0A", 34 }, // AudioSource SoundeR::AudioEmitter::AudioEmitter.PlaySoundAtPosition(AudioCollectionAsset collection, Vector3 worldPosition, int index, bool attachToParent)
         { RngClass::DoNotTamper, "36 05 00 00 80 78 1C 00 75 0A", 34 }, // AudioSource SoundeR::AudioEmitter::AudioEmitter.PlaySoundAtPosition(AudioCollectionAsset collection, Vector3 worldPosition, int index, bool attachToParent)
         { RngClass::DoNotTamper, "EB 2B F3 44 0F 10 84 24 90 00 00 00", -4 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.Refresh()
         { RngClass::DoNotTamper, "EB 2F F3 0F 10 BC 24 90 00 00 00", -4 }, // void FluffyUnderware::Curvy::Generator::Modules::BuildVolumeSpots::BuildVolumeSpots.Refresh()
@@ -366,81 +371,114 @@ void Trainer::InjectDraftWatcher() {
         pickRoomFromSlot = offset + index;
         pickTop = Memory::ReadStaticInt(offset, index + 0x10, data);
     });
+    int64_t getRoomByName = 0;
+    int64_t createCard = 0;
+    _memory->AddSigScan("75 29 48 8B 4B 10", [&](int64_t offset, int index, const std::vector<uint8_t>& data) {
+        getRoomByName = Memory::ReadStaticInt(offset, index + 0x16, data);
+        createCard = Memory::ReadStaticInt(offset, index + 0x24, data);
+    });
+
     size_t numFailedScans = _memory->ExecuteSigScans();
     if (numFailedScans != 0) return;
 
     _buffer = _memory->AllocateArray(0x1'000'000); // This is *way* too big, but what the hell ever. We can afford to allocate 1MB to avoid having to think about running out of buffer space.
-    _memory->WriteData<int64_t>({(__int64)_buffer}, {_bufferSize}); // Write initial size so that we don't overwrite the size with the first bytes.
+    _memory->WriteData<int64_t>({(__int64)_buffer}, {_bufferPosition}); // Write initial size to skip past the reserved initial spots
 
     _memory->Intercept("PickRoomFromSlot", pickRoomFromSlot, pickRoomFromSlot + 20, {
-        0x51,                                   // push rcx                             ; 
-        0x41, 0x50,                             // push r8                              ; 
-        0x41, 0x51,                             // push r9                              ; 
-        0x41, 0x52,                             // push r10                             ; 
-        0x41, 0x53,                             // push r11                             ; 
-        0x41, 0x54,                             // push r12                             ; 
-        0x41, 0x55,                             // push r13                             ; 
-        0x41, 0x56,                             // push r14                             ; 
-        0x41, 0x57,                             // push r15                             ; Push a bunch of registers so we're free to use r8-15 as needed.
-        0x48, 0x8B, 0x4C, 0xC1, 0x20,           // mov rcx,qword ptr ds:[rcx+rax*8+20]  ; rcx = RoomDeck (This is the computation the game uses to determine the correct deck.)
-        0x4C, 0x8B, 0x41, 0x10,                 // mov r8,qword ptr ds:[rcx+10]         ; r8 = RoomDeck.Cards
-        0x45, 0x8B, 0x48, 0x18,                 // mov r9d,qword ptr ds:[r8+18]         ; r9d = List<RoomCard>._size
-        IF_GT(0x45, 0x85, 0xC9),                // test r9d,r9d                         ; 
-        THEN(                                   // if (r9d > 0) {                       ; if (r9d > 0) {
-          0x4D, 0x8B, 0x50, 0x10,               //   mov r10,qword ptr ds:[r8+10]       ;   r10 = List<RoomCard>._items
-          0x49, 0x83, 0xC2, 0x20,               //   add r10,20                         ;   r10 = &_items.vector (the actual data pointer inside a List<T>)
-          0x49, 0xBF, LONG_TO_BYTES(_buffer),   //   mov r15,_buffer                    ;   r15 = _buffer (a shared memory buffer, we will read from here when the game is done choosing decks
-          0x4D, 0x03, 0x3F,                     //   add r15,qword ptr ds:[r15]         ;   r15 += [r15] (adjust forward to account for the current buffer size)
-          DO_WHILE_NONZERO(                     //   do {                               ;   Iterate over all the cards
-            0x4D, 0x8B, 0x1A,                   //     mov r11,qword ptr ds:[r10]       ;     r11 = [r10] (This loads the item at index r9, which is directly pointed to by r10)
-            0x4D, 0x8B, 0x5B, 0x10,             //     mov r11,qword ptr ds:[r11+10]    ;     r11 = RoomCard.Template
-            0x4D, 0x8B, 0x5B, 0x48,             //     mov r11,qword ptr ds:[r11+48]    ;     r11 = RoomTemplate.Headline
-            0x49, 0x83, 0xC3, 0x14,             //     add r11,14                             r11 = &Headline._firstChar
-            DO_WHILE_NONZERO(                   //     do {                             ;     Iterate over all the chars
-              0x66, 0x45, 0x8B, 0x23,           //       mov r12w,word ptr ds:[r11]     ;       r12w = [r11] (dereferencing the wide character in the string)
-              0x66, 0x45, 0x89, 0x27,           //       mov word ptr ds:[r15],r12w     ;       [r15] = r12w (write the wide character into the buffer)
-              0x49, 0x83, 0xC3, 0x02,           //       add r11,2                      ;       r11 += 2 (adjust the string by one wide character)
-              0x49, 0x83, 0xC7, 0x02,           //       add r15,2                      ;       r15 += 2 (adjust the buffer pointer by one wide character)
-              0x66, 0x45, 0x85, 0xE4            //       test r12w,r12w                 ;       check if we reached a null terminator
-            ),                                  //     }                                ;     (done copying string)
-            0x49, 0x83, 0xC2, 0x08,             //     add r10,8                        ;     r10 += 8 (increment to the next card in the list)
-            0x41, 0xFF, 0xC9                    //     dec r9d                          ;     r9d-- (decrement the number of cards remaining)
-          ),                                    //   }                                  ;   (done iterating through cards)
-          0x49, 0x83, 0xC7, 0x02,               //   add r15,2                          ;   r15 += 2 (add a null terminator to indicate end of a deck)
-          0x49, 0xBE, LONG_TO_BYTES(_buffer),   //   mov r14,_buffer                    ;   r14 = _buffer
-          0x4D, 0x29, 0xF7,                     //   sub r15,r14                        ;   r15 -= r14 (compute the delta from the end of the buffer)
-          0x4D, 0x89, 0x3E                      //   mov qword ptr ds:[r14],r15         ;   [r14] = r15 (write back the current buffer size)
-        ),                                      // }                                    ; }
-                                                //                                      ; As we are not writing the original code, we must execute the original code here.
-                                                //                                      ; This is done because the original code had a call which was not feasible.
-        0x4C, 0x8B, 0x41, 0x10,                 // mov r8,qword ptr ds:[rcx+10]         ; r8 = RoomDeck.Cards
-        0x45, 0x8B, 0x48, 0x18,                 // mov r9d,qword ptr ds:[r8+18]         ; r9d = List<RoomCard>._size
-        IF_NE(0x45, 0x85, 0xC9),                // test r9d,r9d                         ;
-        THEN(                                   // if (r9d == 0) {                      ; if (r9d == 0) {
-          0x48, 0x31, 0xC0                      //   xor rax,rax                        ;   rax = 0 (set our return value to null)
-        ),                                      //                                      ; }
-        IF_GT(0x45, 0x85, 0xC9),                // test r9d,r9d                         ;
-        THEN(                                   // if (r9d > 0) {                       ; if (r9d > 0) {
-          0x49, 0xBB, LONG_TO_BYTES(pickTop),   //   mov r11, RoomDeck::PickTop()       ;   r11 = &RoomDeck::PickTop (load an absolute pointer to the function)
-          0x41, 0xFF, 0xD3                      //   call r11                           ;   rax = RoomDeck::PickTop() (call the function to get our return value)
-        ),                                      // }                                    ; }
-        0x41, 0x5F,                             // pop r15                              ; Pop all our used registers to clean up.
-        0x41, 0x5E,                             // pop r14                              ; 
-        0x41, 0x5D,                             // pop r13                              ; 
-        0x41, 0x5C,                             // pop r12                              ; 
-        0x41, 0x5B,                             // pop r11                              ; 
-        0x41, 0x5A,                             // pop r10                              ; 
-        0x41, 0x59,                             // pop r9                               ; 
-        0x41, 0x58,                             // pop r8                               ; 
-        0x59,                                   // pop rcx                              ; 
+        0x51,                                       // push rcx                             ;
+        0x52,                                       // push rdx                             ;
+        0x41, 0x50,                                 // push r8                              ;
+        0x41, 0x51,                                 // push r9                              ;
+        0x41, 0x52,                                 // push r10                             ;
+        0x41, 0x53,                                 // push r11                             ;
+        0x41, 0x54,                                 // push r12                             ;
+        0x41, 0x55,                                 // push r13                             ;
+        0x41, 0x56,                                 // push r14                             ;
+        0x41, 0x57,                                 // push r15                             ; Push a bunch of registers so we're free to use r8-15 as needed.
+        0x48, 0x8B, 0x4C, 0xC1, 0x20,               // mov rcx,qword ptr ds:[rcx+rax*8+20]  ; rcx = RoomDeck (This is the computation the game uses to determine the correct deck.)
+        0x4C, 0x8B, 0x41, 0x20,                     // mov r8,qword ptr ds:[rcx+10]         ; r8 = RoomDeck.FilteredDeck
+        0x45, 0x8B, 0x48, 0x18,                     // mov r9d,qword ptr ds:[r8+18]         ; r9d = List<RoomCard>._size
+        IF_GT(0x45, 0x85, 0xC9),                    // test r9d,r9d                         ;
+        THEN(                                       // if (r9d > 0) {                       ; if (r9d > 0) {
+          0x4D, 0x8B, 0x50, 0x10,                   //   mov r10,qword ptr ds:[r8+10]       ;   r10 = List<RoomCard>._items
+          0x49, 0x83, 0xC2, 0x20,                   //   add r10,20                         ;   r10 = &_items.vector (the actual data pointer inside a List<T>)
+          0x49, 0xBF, LONG_TO_BYTES(_buffer),       //   mov r15,_buffer                    ;   r15 = _buffer (a shared memory buffer, we will read from here when the game is done choosing decks
+          0x4D, 0x03, 0x3F,                         //   add r15,qword ptr ds:[r15]         ;   r15 += [r15] (adjust forward to account for the current buffer size)
+          DO_WHILE_NONZERO(                         //   do {                               ;   Iterate over all the cards
+            0x4D, 0x8B, 0x1A,                       //     mov r11,qword ptr ds:[r10]       ;     r11 = [r10] (This loads the item at index r9, which is directly pointed to by r10)
+            0x4D, 0x8B, 0x5B, 0x10,                 //     mov r11,qword ptr ds:[r11+10]    ;     r11 = RoomCard.Template
+            0x4D, 0x8B, 0x5B, 0x48,                 //     mov r11,qword ptr ds:[r11+48]    ;     r11 = RoomTemplate.Headline
+            0x49, 0x83, 0xC3, 0x14,                 //     add r11,14                             r11 = &Headline._firstChar
+            DO_WHILE_NONZERO(                       //     do {                             ;     Iterate over all the chars
+              0x66, 0x45, 0x8B, 0x23,               //       mov r12w,word ptr ds:[r11]     ;       r12w = [r11] (dereferencing the wide character in the string)
+              0x66, 0x45, 0x89, 0x27,               //       mov word ptr ds:[r15],r12w     ;       [r15] = r12w (write the wide character into the buffer)
+              0x49, 0x83, 0xC3, 0x02,               //       add r11,2                      ;       r11 += 2 (adjust the string by one wide character)
+              0x49, 0x83, 0xC7, 0x02,               //       add r15,2                      ;       r15 += 2 (adjust the buffer pointer by one wide character)
+              0x66, 0x45, 0x85, 0xE4                //       test r12w,r12w                 ;       check if we reached a null terminator
+            ),                                      //     }                                ;     (done copying string)
+            0x49, 0x83, 0xC2, 0x08,                 //     add r10,8                        ;     r10 += 8 (increment to the next card in the list)
+            0x41, 0xFF, 0xC9                        //     dec r9d                          ;     r9d-- (decrement the number of cards remaining)
+          ),                                        //   }                                  ;   (done iterating through cards)
+          0x49, 0x83, 0xC7, 0x02,                   //   add r15,2                          ;   r15 += 2 (add a null terminator to indicate end of a deck)
+          0x49, 0xBE, LONG_TO_BYTES(_buffer),       //   mov r14,_buffer                    ;   r14 = _buffer
+          0x4D, 0x29, 0xF7,                         //   sub r15,r14                        ;   r15 -= r14 (compute the delta from the end of the buffer)
+          0x4D, 0x89, 0x3E                          //   mov qword ptr ds:[r14],r15         ;   [r14] = r15 (write back the current buffer size)
+        ),                                          // }                                    ; }
+                                                    //                                      ;
+                                                    //                                      ; This interception is not writing back the original code. As a result, we must handle it here.
+                                                    //                                      ; We are also running logic here to allow for forced room choices.
+                                                    //                                      ;
+        0x49, 0xBF, LONG_TO_BYTES(_buffer),         // mov r15,_buffer                      ; r15 = _buffer (a shared memory buffer, we will read from here when the game is done choosing decks
+        0x4D, 0x8D, 0x3C, 0xEF,                     // lea r15,qword ptr ds:[r15+rbp*8]     ; r15 += rbp*8 (rbp has the slot #, so we're reading _buffer[1-3]
+        0x4D, 0x8B, 0x37,                           // mov r14,qword ptr ds:[r15]           ; r14 = [r15] (check to see if there's a card override at this slot)
+        IF_NZ(0x4D, 0x85, 0xF6),                    // test r14,r14                         ;
+        THEN(                                       // if (r14 != 0) {                      ; if (r14 != 0) {
+          0x48, 0x8B, 0x8C, 0x24, INT_TO_BYTES(0x190),// mov rcx,qword ptr ss:[rsp+190]     ;   rcx = [rsp + 0x190] (saved stack value of RoomDraftContext)
+          0x48, 0x8B, 0x49, 0x10,                   //   mov rcx,qword ptr ds:[rcx+10]      ;   rcx = RoomDraftContext.Database
+          0x4C, 0x89, 0xF2,                         //   mov rdx,r14                        ;   rdx = r14 (our room name)
+          0x49, 0xBB, LONG_TO_BYTES(getRoomByName), //   mov r11,getRoomByName              ;   r11 = &RoomDatabase.GetRoomByName
+          0x41, 0xFF, 0xD3,                         //   call r11                           ;   RoomTemplate rax = RoomDatabase.GetRoomByName(database, name);
+          IF_NZ(0x48, 0x85, 0xC0),                  //   test rax,rax                       ;   
+          THEN(                                     //   if (rax != 0) {                    ;   if (rax != 0) {
+            0x48, 0x8B, 0x8C, 0x24, INT_TO_BYTES(0x190),// mov rcx,qword ptr ss:[rsp+190]   ;     rcx = [rsp + 0x190] (saved stack value of RoomDraftContext)
+            0x48, 0x89, 0xC2,                       //     mov rdx,rax                      ;     rdx = rax (pass the room template as arg 2)
+            0x49, 0xBB, LONG_TO_BYTES(createCard),  //     mov r11,createCard               ;     r11 = &RoomDraftContext.CreateCard
+            0x41, 0xFF, 0xD3                        //     call r11                         ;     RoomCard rax = RoomDraftContext.CreateCard(roomDraftContext, template);
+          )                                         //   }                                  ;   } (We're done -- rax is now our return value)
+        ),                                          // }                                    ; } (Done with override behavior)
+        IF_Z(0x4D, 0x85, 0xF6),                     // test r14, r14                        ;
+        THEN(                                       // if (r14 == 0) {                      ; if (r14 == 0) {
+          0x4C, 0x8B, 0x41, 0x20,                   //   mov r8,qword ptr ds:[rcx+10]       ;   r8 = RoomDeck.FilteredDeck
+          0x45, 0x8B, 0x48, 0x18,                   //   mov r9d,qword ptr ds:[r8+18]       ;   r9d = List<RoomCard>._size
+          IF_NE(0x45, 0x85, 0xC9),                  //   test r9d,r9d                       ;
+          THEN(                                     //   if (r9d == 0) {                    ;   if (r9d == 0) {
+            0x48, 0x31, 0xC0                        //     xor rax,rax                      ;     rax = 0 (set our return value to null)
+          ),                                        //   }                                  ;   }
+          IF_GT(0x45, 0x85, 0xC9),                  //   test r9d,r9d                       ;
+          THEN(                                     //   if (r9d > 0) {                     ;   if (r9d > 0) {
+            0x49, 0xBB, LONG_TO_BYTES(pickTop),     //     mov r11, RoomDeck::PickTop()     ;     r11 = &RoomDeck::PickTop (load an absolute pointer to the function)
+            0x41, 0xFF, 0xD3                        //     call r11                         ;     rax = RoomDeck::PickTop() (call the function to get our return value)
+          )                                         //   }                                  ;   }
+        ),                                          // }                                    ; }
+        0x41, 0x5F,                                 // pop r15                              ; Pop all our used registers to clean up.
+        0x41, 0x5E,                                 // pop r14                              ;
+        0x41, 0x5D,                                 // pop r13                              ;
+        0x41, 0x5C,                                 // pop r12                              ;
+        0x41, 0x5B,                                 // pop r11                              ;
+        0x41, 0x5A,                                 // pop r10                              ;
+        0x41, 0x59,                                 // pop r9                               ;
+        0x41, 0x58,                                 // pop r8                               ;
+        0x5A,                                       // pop rdx                              ;
+        0x59,                                       // pop rcx                              ;
     }, /*writeOriginalCode*/ false);
 }
 
 std::vector<wchar_t> Trainer::ReadBuffer() {
-    int64_t newBufferSize = _memory->ReadData<int64_t>({_buffer}, {0x8})[0];
-    if (newBufferSize == _bufferSize) return {};
-    std::vector<wchar_t> rawChars = _memory->ReadData<wchar_t>({_buffer + _bufferSize}, newBufferSize - _bufferSize);
-    _bufferSize = newBufferSize;
+    if (_buffer == 0) return {};
+    int64_t newBufferPosition = _memory->ReadData<int64_t>({_buffer}, {0x8})[0];
+    if (newBufferPosition == _bufferPosition) return {};
+    std::vector<wchar_t> rawChars = _memory->ReadData<wchar_t>({_buffer + _bufferPosition}, (newBufferPosition - _bufferPosition) / 2);
+    _bufferPosition = newBufferPosition;
 
     return rawChars;
 }
@@ -462,7 +500,21 @@ std::vector<std::vector<std::wstring>> Trainer::GetDecks() {
             i++;
         }
         decks.push_back(deck);
+        i++;
     }
 
     return decks;
+}
+
+void Trainer::ForceRoomDraft(const std::wstring& name, int slot) {
+    if (slot < 1 || slot > 3) return;
+    if (name.size() == 0) {
+        // Clear the override if we write an empty string
+        _memory->WriteData<int64_t>({_buffer + 0x8 * slot}, {0});
+        return;
+    }
+    __int64 addr = _memory->AllocateArray(name.size());
+    std::vector<wchar_t> nameData(name.begin(), name.end());
+    _memory->WriteData<wchar_t>({addr}, nameData);
+    _memory->WriteData<int64_t>({_buffer + 0x8 * slot}, {addr});
 }

@@ -24,8 +24,9 @@ using byte = unsigned char;
 #define IF_GE(...) __VA_ARGS__, 0x72 // jb
 #define IF_LT(...) __VA_ARGS__, 0x73 // jae
 #define IF_NE(...) __VA_ARGS__, 0x74 // je
-#define IF_NZ(...) __VA_ARGS__, 0x74 // jz
+#define IF_NZ IF_NE
 #define IF_EQ(...) __VA_ARGS__, 0x75 // jne
+#define IF_Z IF_EQ
 #define IF_GT(...) __VA_ARGS__, 0x76 // jbe
 #define IF_LE(...) __VA_ARGS__, 0x77 // ja
 #define THEN(...) ARGCOUNT(__VA_ARGS__), __VA_ARGS__

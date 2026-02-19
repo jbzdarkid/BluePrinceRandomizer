@@ -136,7 +136,7 @@ size_t Memory::ExecuteSigScans() {
         if (notFound == 0) break;
     }
 
-    assert(notFound == 0);
+    // assert(notFound == 0);
 
     _sigScans.clear();
     return notFound;

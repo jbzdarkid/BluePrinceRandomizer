@@ -37,6 +37,7 @@ public:
     std::vector<RngBehavior> GetAllBehaviors() { return _memory->ReadData<RngBehavior>({_rngBehaviors}, RngClass::NumEntries); }
 
     std::vector<std::vector<std::wstring>> GetDecks();
+    void ForceRoomDraft(const std::wstring& name, int slot);
 
 private:
     Trainer() = default;
@@ -64,5 +65,5 @@ private:
     __int64 _intRngFunction = 0;
     __int64 _floatRngFunction = 0;
     __int64 _buffer = 0;
-    int64_t _bufferSize = 8;
+    int64_t _bufferPosition = 32; // [bufferSize, roomOverride1, roomOverride2, roomOverride3]
 };
