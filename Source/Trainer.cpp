@@ -17,6 +17,7 @@ std::shared_ptr<Trainer> Trainer::Create(const std::shared_ptr<Memory>& memory) 
 #endif
 
     trainer->InjectDraftWatcher();
+    trainer->HookFsmInt();
 
     return trainer;
 }
@@ -452,15 +453,18 @@ void Trainer::InjectDraftWatcher() {
         ),                                          // }                                    ; } (Done with override behavior)
         IF_Z(0x4D, 0x85, 0xF6),                     // test r14, r14                        ;
         THEN(                                       // if (r14 == 0) {                      ; if (r14 == 0) {
-          0x45, 0x8B, 0x48, 0x18,                   //   mov r9d,qword ptr ds:[r8+18]       ;   r9d = List<RoomCard>._size (note: r8 is unmodified from our math above)
+          0x48, 0x8B, 0x8C, 0x24, INT_TO_BYTES(0x58),//  mov rcx,qword ptr ss:[rsp+58]      ;   rcx = [rsp + 0x58] (saved stack value of rcx)
+          0x48, 0x8B, 0x4C, 0xC1, 0x20,             //   mov rcx,qword ptr ds:[rcx+rax*8+20];   rcx = RoomDeck (This is the computation the game uses to determine the correct deck.)
+          0x4C, 0x8B, 0x41, 0x20,                   //   mov r8,qword ptr ds:[rcx+10]       ;   r8 = RoomDeck.FilteredDeck
+          0x45, 0x8B, 0x48, 0x18,                   //   mov r9d,qword ptr ds:[r8+18]       ;   r9d = List<RoomCard>._size
           IF_NE(0x45, 0x85, 0xC9),                  //   test r9d,r9d                       ;
           THEN(                                     //   if (r9d == 0) {                    ;   if (r9d == 0) {
             0x48, 0x31, 0xC0                        //     xor rax,rax                      ;     rax = 0 (set our return value to null)
           ),                                        //   }                                  ;   }
           IF_GT(0x45, 0x85, 0xC9),                  //   test r9d,r9d                       ;
           THEN(                                     //   if (r9d > 0) {                     ;   if (r9d > 0) {
-            0x49, 0xBB, LONG_TO_BYTES(pickTop),     //     mov r11, RoomDeck::PickTop()     ;     r11 = &RoomDeck::PickTop (load an absolute pointer to the function)
-            0x41, 0xFF, 0xD3                        //     call r11                         ;     rax = RoomDeck::PickTop() (call the function to get our return value)
+            0x49, 0xBB, LONG_TO_BYTES(pickTop),     //     mov r11, RoomDeck::PickTop()     ;     r11 = &RoomDeck::PickTop
+            0x41, 0xFF, 0xD3                        //     call r11                         ;     rax = RoomDeck::PickTop(RoomDeck this, bool reshuffle)
           )                                         //   }                                  ;   }
         ),                                          // }                                    ; }
         0x41, 0x5F,                                 // pop r15                              ; Pop all our used registers to clean up.
@@ -537,4 +541,32 @@ void Trainer::ForceRoomDraft(const std::wstring& name, int slot) {
     __int64 addr = _memory->AllocateArray(stringBytes.size());
     _memory->WriteData<byte>({addr}, stringBytes);
     _memory->WriteData<int64_t>({_buffer + 0x8 * slot}, {addr});
+}
+
+void Trainer::HookFsmInt() {
+    int64_t setIntValue = 0;
+    _memory->AddSigScan("48 8B 71 50 48 85 FF 74 62", [&](int64_t offset, int index, const std::vector<uint8_t>& data) {
+        setIntValue = offset + index + 4;
+    });
+
+    size_t numFailedScans = _memory->ExecuteSigScans();
+    if (numFailedScans != 0) return;
+
+    _memory->WriteData<byte>({setIntValue + 34}, {0x19});
+    _memory->Intercept("SetIntValue", setIntValue, setIntValue + 20, {
+        0x4C, 0x8B, 0x46, 0x18,                             // mov r8,qword ptr ds:[rsi+18]     ; r8 = FsmInt.Name (the FSM variable is saved on rsi)
+        0x49, 0x83, 0xC0, 0x14,                             // add r8,4                         ; r8 = &Name.data
+        IF_EQ(0x41, 0x81, 0x38, INT_TO_BYTES(0x540053)),    // cmp dword ptr ds:[r8],0x540053   ; cmp [r8], L"ST"
+        THEN(                                               //                                  ;
+          0x49, 0x83, 0xC0, 0x04,                           // add r8,4                         ; move two characters forward
+          IF_EQ(0x41, 0x81, 0x38, INT_TO_BYTES(0x500045)),  // cmp dword ptr ds:[r8],0x500045   ; cmp [r8], L"EP"
+          THEN(                                             //                                  ;
+            0x49, 0x83, 0xC0, 0x04,                         // add r8,4                         ; move two characters forward
+            IF_EQ(0x41, 0x81, 0x38, INT_TO_BYTES(0x53)),    // cmp dword ptr ds:[r8],0x53       ; cmp [r8], L"S\0"
+            THEN(                                           //                                  ;
+                0x48, 0x89, 0xF7                            // mov rdi,rsi                      ; rdi = rsi (replace the "target steps" with the current "STEPS", so steps aren't reduced)
+            )                                               //
+          )                                                 //
+        )                                                   //
+    }, /*writeOriginalCode*/ false);
 }

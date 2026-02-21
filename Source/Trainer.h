@@ -45,6 +45,7 @@ private:
     bool FindAllRngFunctions();
     void OverwriteRngFunctions();
     void InjectDraftWatcher();
+    void HookFsmInt();
     std::vector<wchar_t> ReadBuffer();
 
     struct SigScanTemplate {
