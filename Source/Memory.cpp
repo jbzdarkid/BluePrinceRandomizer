@@ -16,11 +16,10 @@ Memory::Memory(const std::wstring& processName) : _processName(processName) {
             break;
         }
     }
-    assert(_handle);
+    assert(_handle, "Couldn't attach to game");
     if (!_handle) return;
 
-    std::tie(_baseAddress, _endOfModule) = DebugUtils::GetModuleBounds(_handle);
-    assert(_baseAddress);
+    std::tie(_baseAddress, _endOfModule) = DebugUtils::GetModuleBounds(_handle, "GameAssembly.dll");
 
     struct Data {
         DWORD pid;
@@ -90,7 +89,7 @@ std::vector<byte> Memory::SigScan::GetScanBytes(const std::string& scanHex) {
         if (halfByte) bytes.push_back(b);
         halfByte = !halfByte;
     }
-    assert(!halfByte);
+    assert(!halfByte, "[INTERNAL ERROR] Could not parse hex bytes");
 
     return bytes;
 }
@@ -172,7 +171,6 @@ int32_t Memory::CallFunction(int64_t relativeAddress,
         float xmm2;
         float xmm3;
     };
-    assert((uint64_t)relativeAddress < _baseAddress);
     Arguments args = {
         ComputeOffset({relativeAddress}),
         rcx, rdx, r8, r9,
@@ -238,31 +236,31 @@ int32_t Memory::CallFunction(__int64 address, const std::string& str, __int64 rd
 }
 
 void Memory::ReadDataInternal(void* buffer, uintptr_t computedOffset, size_t bufferSize) {
-    assert(bufferSize > 0);
+    assert(bufferSize > 0, "[INTERNAL ERROR] Read data into a size-0 buffer");
     if (!_handle) return;
     // Ensure that the buffer size does not cause a read across a page boundary.
     if (bufferSize > 0x1000 - (computedOffset & 0x0000FFF)) {
         bufferSize = 0x1000 - (computedOffset & 0x0000FFF);
     }
     if (!ReadProcessMemory(_handle, (void*)computedOffset, buffer, bufferSize, nullptr)) {
-        assert(false);
+        assert(false, "Failed to read process memory");
     }
 }
 
 void Memory::WriteDataInternal(const void* buffer, uintptr_t computedOffset, size_t bufferSize) {
-    assert(bufferSize > 0);
+    assert(bufferSize > 0, "[INTERNAL ERROR] Writing data into a size-0 buffer");
     if (!_handle) return;
     if (bufferSize > 0x1000 - (computedOffset & 0x0000FFF)) {
         bufferSize = 0x1000 - (computedOffset & 0x0000FFF);
     }
     if (!WriteProcessMemory(_handle, (void*)computedOffset, buffer, bufferSize, nullptr)) {
-        assert(false);
+        assert(false, "Failed to write process memory");
     }
 }
 
 uintptr_t Memory::ComputeOffset(std::vector<__int64> offsets) {
-    assert(offsets.size() > 0);
-    assert(offsets.front() != 0);
+    assert(offsets.size() > 0, "[INTERNAL ERROR] Zero offsets passed");
+    assert(offsets.front() != 0, "[INTERNAL ERROR] Front offset cannot be zero");
 
     // Leave off the last offset, since it will be either read/write, and may not be of type uintptr_t.
     const __int64 final_offset = offsets.back();
@@ -290,13 +288,13 @@ uintptr_t Memory::ComputeOffset(std::vector<__int64> offsets) {
         }
 
         MEMORY_BASIC_INFORMATION info;
-        assert(computedAddress != 0);
+        assert(computedAddress != 0, "Attempted to dereference NULL!");
         if (!VirtualQuery(reinterpret_cast<LPVOID>(cumulativeAddress), &info, sizeof(info))) {
-            assert(false);
+            assert(false, "Failed to read process memory, possibly because cumulativeAddress was too large.");
         } else {
-            assert(info.State == MEM_COMMIT);
-            assert(info.AllocationProtect & 0xC4);
-            assert(false);
+            assert(info.State == MEM_COMMIT, "Attempted to read unallocated memory.");
+            assert(info.AllocationProtect & 0xC4, "Attempted to read unreadable memory."); // 0xC4 = PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY | PAGE_READWRITE
+            assert(false, "Failed to read memory for some as-yet unknown reason."); // Won't fire an assert dialogue if a previous one did, because that would be within 30s.
         }
         return 0;
     }
@@ -333,7 +331,7 @@ void Memory::Intercept(const std::string& name, __int64 firstLine, __int64 nextL
         0x41, 0x5B,                         // pop r11 (we return to this opcode)
     };
     // We need enough space for the jump in the source code
-    assert(static_cast<int>(nextLine - firstLine) >= jumpAway.size());
+    assert(static_cast<int>(nextLine - firstLine) >= jumpAway.size(), "[INTERNAL ERROR] Injection did not have enough space for jump away/jump back");
 
     // Fill any leftover space with nops
     for (size_t i=jumpAway.size(); i<static_cast<size_t>(nextLine - firstLine); i++) jumpAway.push_back(0x90);

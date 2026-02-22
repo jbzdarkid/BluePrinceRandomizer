@@ -178,6 +178,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                         std::wstring list;
                         for (const std::wstring& card : decks[i]) {
                             if (card[0] == L'<') { // Weirdly, some cards have color labels. Remove them.
+                                assert(card.size() > 23, "Output card had <tags> but was not 23 characters");
                                 list += card.substr(15, card.size() - 23) + L'\n';
                             } else {
                                 list += card + L'\n';
@@ -357,6 +358,17 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     g_hInstance = hInstance;
 
     CreateComponents();
+
+    if (wcsncmp(L"-callstack", lpCmdLine, 11) == 0) {
+        if (IsClipboardFormatAvailable(CF_UNICODETEXT) && OpenClipboard(g_hwnd)) {
+            HGLOBAL hglb = GetClipboardData(CF_UNICODETEXT);
+            WCHAR *data = (WCHAR*)GlobalLock(hglb);
+            std::wstring clipboardContents(data, data + GlobalSize(hglb));
+            RegenerateCallstack(clipboardContents);
+            GlobalUnlock(hglb); 
+            CloseClipboard(); 
+        }
+    }
 
     auto bluePrince = std::make_shared<Memory>(L"BLUE PRINCE.exe");
     g_trainer = Trainer::Create(bluePrince);

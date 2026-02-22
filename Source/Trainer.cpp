@@ -380,7 +380,7 @@ void Trainer::InjectDraftWatcher() {
     });
 
     size_t numFailedScans = _memory->ExecuteSigScans();
-    if (numFailedScans != 0) return;
+    assert(numFailedScans == 0, "Failed to find scan for PickRoomFromSlot");
 
     _buffer = _memory->AllocateArray(0x1'000'000); // This is *way* too big, but what the hell ever. We can afford to allocate 1MB to avoid having to think about running out of buffer space.
     _memory->WriteData<int64_t>({(__int64)_buffer}, {_bufferPosition}); // Write initial size to skip past the reserved initial spots
@@ -516,14 +516,14 @@ std::vector<std::vector<std::wstring>> Trainer::GetDecks() {
 }
 
 void Trainer::ForceRoomDraft(const std::wstring& name, int slot) {
-    if (slot < 1 || slot > 3) return;
+    assert(slot >= 1 && slot <= 3, "[INTERNAL ERROR] Attempted to set a slot which was too big");
     if (name.size() == 0) {
         // Clear the override if we write an empty string
         _memory->WriteData<int64_t>({_buffer + 0x8 * slot}, {0});
         return;
     }
     // Annoyingly, we have to allocate a C# String here, which has some extra nonsense.
-    // TODO: I am not actually allocating the vtable pointer. Hopefully C# doesn't mind. If not, I can copy it from a known string offset (?)
+    // TODO: I am not actually allocating the vtable pointer. It seems like C# doesn't mind.
     std::vector<byte> stringBytes = {
         LONG_TO_BYTES(0), // vtable
         LONG_TO_BYTES(0), // unused
@@ -550,7 +550,7 @@ void Trainer::HookFsmInt() {
     });
 
     size_t numFailedScans = _memory->ExecuteSigScans();
-    if (numFailedScans != 0) return;
+    assert(numFailedScans == 0, "Failed to find scan for FsmInt");
 
     _memory->WriteData<byte>({setIntValue + 34}, {0x19});
     _memory->Intercept("SetIntValue", setIntValue, setIntValue + 20, {
