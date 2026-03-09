@@ -1,5 +1,6 @@
 #pragma once
 #include "ThreadSafeAddressMap.h"
+#include "ProcStatus.h"
 
 using byte = unsigned char;
 
@@ -39,8 +40,12 @@ class Memory final {
 public:
     Memory(const std::wstring& processName);
     ~Memory();
+    ProcStatus TryAttachToProcess();
+
     void BringToFront();
     bool IsForeground();
+
+    static HWND GetProcessHwnd(DWORD pid);
 
     Memory(const Memory& memory) = delete;
     Memory& operator=(const Memory& other) = delete;
@@ -49,10 +54,11 @@ public:
     static __int64 ReadStaticInt(__int64 offset, int index, const std::vector<byte>& data, size_t bytesToEOL = 4);
     using ScanFunc = std::function<void(__int64 offset, int index, const std::vector<byte>& data)>;
     using ScanFunc2 = std::function<bool(__int64 offset, int index, const std::vector<byte>& data)>;
-    void AddSigScan(const std::vector<byte>& scanBytes, const ScanFunc& scanFunc);
     void AddSigScan(const std::string& scanHex, const ScanFunc& scanFunc);
-    void AddSigScan2(const std::vector<byte>& scanBytes, const ScanFunc2& scanFunc);
+    void AddSigScan2(const std::string& scanHex, const ScanFunc2& scanFunc);
     [[nodiscard]] size_t ExecuteSigScans();
+
+    std::string ReadString(const std::vector<__int64>& offsets);
 
     template<class T>
     inline std::vector<T> ReadData(const std::vector<__int64>& offsets, size_t numItems) {
@@ -62,19 +68,22 @@ public:
         return data;
     }
 
-    std::string ReadString(const std::vector<__int64>& offsets);
-
     template <class T>
     inline void WriteData(const std::vector<__int64>& offsets, const std::vector<T>& data) {
+        if (!_handle) return;
         WriteDataInternal(&data[0], ComputeOffset(offsets), sizeof(T) * data.size());
     }
+
+    uintptr_t ResolvePointerPath(const std::vector<__int64>& offsets);
+    void ClearComputedAddress(const std::vector<__int64>& offsets);
+    void ClearAllComputedAddresses();
 
     void Intercept(const std::string& name, __int64 firstLine, __int64 nextLine, const std::vector<byte>& data, bool writeOriginalCode = true);
     void Unintercept(const std::string& name);
     uintptr_t AllocateArray(__int64 size);
 
     // This is the fully typed function -- you mostly won't need to call this.
-    int CallFunction(__int64 relativeAddress,
+    int CallFunction(__int64 address,
         const __int64 rcx, const __int64 rdx, const __int64 r8, const __int64 r9,
         const float xmm0, const float xmm1, const float xmm2, const float xmm3);
     int CallFunction(__int64 address, __int64 rcx) { return CallFunction(address, rcx, 0, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f); }
@@ -85,17 +94,16 @@ public:
 private:
     void ReadDataInternal(void* buffer, const uintptr_t computedOffset, size_t bufferSize);
     void WriteDataInternal(const void* buffer, uintptr_t computedOffset, size_t bufferSize);
-    uintptr_t ComputeOffset(std::vector<__int64> offsets);
+    uintptr_t ComputeOffset(const std::vector<__int64>& offsets);
 
-    // Parts of the constructor / StartHeartbeat
+    // Required for process attachment
     std::wstring _processName;
-
-    // Parts of Initialize
     HANDLE _handle = nullptr;
     DWORD _pid = 0;
-    HWND _hwnd = NULL;
     uintptr_t _baseAddress = 0;
     uintptr_t _endOfModule = 0;
+    size_t _pointerSize = 0;
+    HWND _hwnd = NULL;
 
     // Parts of Read / Write / Sigscan / etc
     uintptr_t _functionPrimitive = 0;
@@ -103,6 +111,7 @@ private:
 
     struct SigScan {
         bool found = false;
+        std::string hex;
         std::vector<byte> bytes;
         ScanFunc2 scanFunc;
 

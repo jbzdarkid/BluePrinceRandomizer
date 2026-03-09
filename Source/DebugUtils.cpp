@@ -8,20 +8,24 @@
 #undef DebugPrint
 void DebugUtils::DebugPrint(const std::string& text) {
     OutputDebugStringA(text.c_str());
+    std::cout << text;
     if (text[text.size()-1] != '\n') {
         OutputDebugStringA("\n");
+        std::cout << '\n';
     }
 }
 
 void DebugUtils::DebugPrint(const std::wstring& text) {
     OutputDebugStringW(text.c_str());
+    std::wcout << text;
     if (text[text.size()-1] != L'\n') {
         OutputDebugStringW(L"\n");
+        std::wcout << L'\n';
     }
 }
 #pragma pop_macro("DebugPrint")
 
-std::pair<uint64_t, uint64_t> DebugUtils::GetModuleBounds(HANDLE process, const std::string& moduleName) {
+std::pair<uint64_t, uint64_t> DebugUtils::GetModuleBounds(HANDLE process, const std::wstring& moduleName) {
     DWORD requiredBytes = sizeof(HMODULE);
     std::vector<HMODULE> modules(1, nullptr);
 
@@ -29,10 +33,10 @@ std::pair<uint64_t, uint64_t> DebugUtils::GetModuleBounds(HANDLE process, const 
     modules.resize(requiredBytes / sizeof(HMODULE));
     EnumProcessModules(process, &modules[0], sizeof(HMODULE) * (DWORD)modules.size(), &requiredBytes);
 
-    std::string baseName(512, '\0');
+    std::wstring baseName(moduleName.size(), '\0');
     for (const auto& module : modules)
     {
-        int size = GetModuleBaseNameA(process, module, &baseName[0], sizeof(baseName));
+        int size = GetModuleBaseNameW(process, module, &baseName[0], sizeof(baseName));
         baseName.resize(size);
         if (baseName != moduleName) continue;
 
@@ -44,7 +48,6 @@ std::pair<uint64_t, uint64_t> DebugUtils::GetModuleBounds(HANDLE process, const 
         return {startOfModule, endOfModule};
     }
 
-    assert(false, "Failed to find module bounds");
     return {};
 }
 
@@ -77,7 +80,7 @@ std::wstring GetStackTrace() {
     std::wstringstream ss;
     ss << std::hex << std::showbase << std::nouppercase;
 
-    uint64_t baseAddress = DebugUtils::GetModuleBounds(process, "BluePrinceRandomizer.exe").first;
+    uint64_t baseAddress = DebugUtils::GetModuleBounds(process, EXE_NAME).first;
     BOOL result = FALSE;
     do {
         ss << (stackFrame.AddrPC.Offset - baseAddress) << L' '; // Normalize offsets relative to the base address
@@ -91,12 +94,12 @@ void ShowAssertDialogue(const wchar_t* message) {
     static time_t lastShownAssert = ~0ULL; // MAXINT
     if (time(nullptr) - lastShownAssert < 30) return;
     lastShownAssert = time(nullptr);
-    std::wstring msg = L"BluePrinceRandomizer version " VERSION_STR L" has encountered an error.\n";
+    std::wstring msg = EXE_NAME L" version " VERSION_STR L" has encountered an error.\n";
     msg += L"Please press Control C to copy this error, and paste it to darkid.\n";
     msg += message;
     msg += L"\n";
     msg += GetStackTrace();
-    MessageBox(NULL, msg.c_str(), L"WitnessTrainer encountered an error.", MB_TASKMODAL | MB_ICONHAND | MB_OK | MB_SETFOREGROUND);
+    MessageBox(NULL, msg.c_str(), EXE_NAME L" encountered an error.", MB_TASKMODAL | MB_ICONHAND | MB_OK | MB_SETFOREGROUND);
 }
 
 // Note: This function must work properly even in release mode, since we will need to generate callbacks for release exes.
@@ -104,10 +107,11 @@ void RegenerateCallstack(const std::wstring& callstack) {
     if (callstack.empty()) return;
     if (callstack[0] != '0') return; // Callstacks should always start with '0x'
     HANDLE process = GetCurrentProcess();
-    uint64_t baseAddress = DebugUtils::GetModuleBounds(process, "BluePrinceRandomizer.exe").first;
+    uint64_t baseAddress = DebugUtils::GetModuleBounds(process, EXE_NAME).first;
     std::vector<uint64_t> addrs;
     std::wstring buffer;
     for (const wchar_t c : callstack) {
+        if (c == L'\0') break;
         if (c == L' ') {
             addrs.push_back(baseAddress + std::stoull(buffer, nullptr, 16));
             buffer.clear();
@@ -133,6 +137,7 @@ void RegenerateCallstack(const std::wstring& callstack) {
         ss << addr;
         if (symbolInfo != nullptr && SymFromAddr(process, addr, NULL, symbolInfo)) {
             ss << L' ' << symbolInfo->Name;
+            ss << L" +" << (addr - symbolInfo->Address);
         }
         ss << L'\n';
     }

@@ -2,24 +2,98 @@
 #include "Trainer.h"
 #include "Panels.h"
 
-std::shared_ptr<Trainer> Trainer::Create(const std::shared_ptr<Memory>& memory) {
-    auto trainer = std::shared_ptr<Trainer>(new Trainer());
-    trainer->_memory = memory;
+Trainer::Trainer(std::shared_ptr<Memory> memory) : _memory(memory) {
+}
 
-    bool success = true;
+void Trainer::StartHeartbeat(HWND window, UINT message) {
+    if (_threadActive) return;
+    _threadActive = true;
+    _thread = std::thread([sharedThis = shared_from_this(), window, message]{
+        SetCurrentThreadName(L"Heartbeat");
 
+        do {
+            ProcStatus status = sharedThis->Heartbeat();
+            sharedThis->_firstHeartbeat = false;
+
+            PostMessage(window, message, status, NULL);
+            std::this_thread::sleep_for(s_heartbeat);
+        } while (sharedThis->_threadActive);
+        });
+    _thread.detach();
+}
+
+void Trainer::StopHeartbeat() {
+    _threadActive = false;
+}
+
+ProcStatus Trainer::Heartbeat() {
+    ProcStatus memoryStatus = _memory->TryAttachToProcess();
+    if (memoryStatus == ProcStatus::NotRunning) return ProcStatus::NotRunning;
+    if (memoryStatus == ProcStatus::Stopped) {
+        _gameWasStarted = false; // Used to detect if the game just started
+        // Wait for the process to fully close; otherwise we might accidentally re-attach to it.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        return ProcStatus::Stopped;
+    }
+
+    // Note that sigscans are idempotent -- each should only "succeed" once.
+    // Ergo, it is OK to have sigscans which are not available until after a few game actions are taken.
+    size_t failedScans = _memory->ExecuteSigScans();
+    if (failedScans > 0) return ProcStatus::NotRunning;
+
+    // TODO: No concept of loading as yet.
+
+    // At this point, we think the game is running... now we have to figure out what, exactly, to say.
+
+    // If this is the first heartbeat we're sending, we just started (and the game was already running).
+    // We set _firstHeartbeat = false in the caller after we return.
+    if (_firstHeartbeat) {
+        _gameWasStarted = true;
+        std::thread([sharedThis = shared_from_this()] {
+            sharedThis->OnGameStart();
+        }).detach();
+        return ProcStatus::AlreadyRunning;
+    }
+
+    // If this is the first heartbeat where the Entity_Manager is allocated, the game just started
+    if (!_gameWasStarted) {
+        _gameWasStarted = true;
+        std::thread([sharedThis = shared_from_this()] {
+            Sleep(0x1000); // Slight delay since (apparently) the loading status is 0 even though the game isn't quite ready.
+            sharedThis->OnGameStart();
+        }).detach();
+        return ProcStatus::Started;
+    }
+
+    // Otherwise, business as usual.
+    return ProcStatus::Running;
+}
+
+void Trainer::OnGameStart() {
 #if DERANDOMIZE
-    success = trainer->FindAllRngFunctions();
-    if (!success) return nullptr;
+    FindAllRngFunctions();
 
-    trainer->InjectCustomRng();
-    trainer->OverwriteRngFunctions();
+    InjectCustomRng();
+    OverwriteRngFunctions();
+
+    g_trainer->SetAllSeeds(42); // A seed value of 0 will stay stuck at 0, I think.
+    g_trainer->SetAllBehaviors(Trainer::RngBehavior::Constant);
 #endif
 
-    trainer->InjectDraftWatcher();
-    trainer->HookFsmInt();
+    InjectDraftWatcher();
+    HookFsmInt();
+}
 
-    return trainer;
+// Restore default game settings when shutting down the trainer.
+Trainer::~Trainer() {
+    _memory->Unintercept("PickRoomFromSlot");
+    _memory->Unintercept("SetIntValue");
+#if DERANDOMIZE
+    #error TODO: Undo OverwriteRngFunctions
+#endif
+
+    StopHeartbeat();
+    if (_thread.joinable()) _thread.join();
 }
 
 void Trainer::InjectCustomRng() {
@@ -88,7 +162,7 @@ void Trainer::InjectCustomRng() {
     };
 
     _intRngFunction = _memory->AllocateArray(intRngInstructions.size());
-    _memory->WriteData<byte>({_intRngFunction}, intRngInstructions);
+    _memory->WriteData<byte>({_intRngFunction}, intRngInstructions); // TODO: This should be _memory->Intercept, so that we can undo it :(
 
     std::vector<byte> floatRngInstructions = {
         0x51,                                                   // push rcx                         ; Preserve rcx and rdx

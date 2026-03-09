@@ -1,8 +1,14 @@
 #pragma once
+#include "ProcStatus.h"
 
-class Trainer final {
+class Trainer final : public std::enable_shared_from_this<Trainer> {
 public:
-    static std::shared_ptr<Trainer> Create(const std::shared_ptr<Memory>& memory);
+    Trainer(std::shared_ptr<Memory> memory);
+    void StartHeartbeat(HWND window, UINT message);
+    void StopHeartbeat();
+    ProcStatus Heartbeat();
+    void OnGameStart();
+    ~Trainer();
 
     enum RngClass : byte {
         Unknown = 0,
@@ -40,7 +46,18 @@ public:
     void ForceRoomDraft(const std::wstring& name, int slot);
 
 private:
-    Trainer() = default;
+    std::shared_ptr<Memory> _memory;
+    bool _threadActive = false;
+    std::thread _thread;
+    bool _firstHeartbeat = true;
+    bool _gameWasStarted = false;
+
+#ifdef NDEBUG
+    static constexpr std::chrono::milliseconds s_heartbeat = std::chrono::milliseconds(100);
+#else // Induce more stress in debug, to catch errors more easily.
+    static constexpr std::chrono::milliseconds s_heartbeat = std::chrono::milliseconds(10);
+#endif
+
     void InjectCustomRng();
     bool FindAllRngFunctions();
     void OverwriteRngFunctions();
@@ -56,7 +73,6 @@ private:
         __int64 targetFunction = 0; // Relative to the baseAddress
     };
 
-    std::shared_ptr<Memory> _memory;
     std::vector<SigScanTemplate> _sigScans1;
     std::vector<SigScanTemplate> _sigScans2;
     std::vector<SigScanTemplate> _sigScans3;
