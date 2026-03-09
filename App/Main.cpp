@@ -10,6 +10,11 @@
 #include <map>
 #include "RoomList.h"
 
+// Feature requests:
+// (from me) -> Some way to view/manipulate FSM variables
+// Some way to fix RNG for all types (including item spawns, e.g.)
+// Some way to read directory status (incl 'drafted' vs 'found')
+
 #define SET_SEED_UNKNOWN            0x401
 #define SET_SEED_DONOTTAMPER        0x402
 #define SET_SEED_BIRDPATHING        0x403
