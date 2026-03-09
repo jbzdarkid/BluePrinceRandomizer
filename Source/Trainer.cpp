@@ -22,10 +22,6 @@ void Trainer::StartHeartbeat(HWND window, UINT message) {
     _thread.detach();
 }
 
-void Trainer::StopHeartbeat() {
-    _threadActive = false;
-}
-
 ProcStatus Trainer::Heartbeat() {
     ProcStatus memoryStatus = _memory->TryAttachToProcess();
     if (memoryStatus == ProcStatus::NotRunning) return ProcStatus::NotRunning;

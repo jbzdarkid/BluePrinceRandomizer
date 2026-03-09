@@ -110,14 +110,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
         {
             g_trainer->StopHeartbeat();
             std::weak_ptr<Trainer> trainer = g_trainer;
-            // Free the global reference, so the only remaining reference should be in command threads.
-            // Commands are also blocked when the trainer is null.
-            g_trainer = nullptr;
 
             // Wait to actually quit until all background threads have finished their work.
             // Note that we do need to pump messages here, since said work may require the message pump,
             // which we are currently holding hostage.
-            while (trainer.use_count() > 1) {
+            while (trainer.use_count() > 0) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 MSG msg;
                 if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -145,7 +142,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             static HBRUSH s_solidBrush = CreateSolidBrush(RGB(255, 255, 255));
             return (LRESULT)s_solidBrush;
         case HEARTBEAT:
-            if (!g_trainer) break; // We are shutting down, do not process any actions
+            if (!g_trainer->HeartbeatActive()) break; // We are shutting down, do not process any actions
             switch ((ProcStatus)wParam) {
             case ProcStatus::Stopped:
             case ProcStatus::NotRunning:
@@ -179,7 +176,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
     // All commands should execute on a background thread, to avoid hanging the UI.
     std::thread t([wParam, lParam] {
         SetCurrentThreadName(L"Command Helper");
-        if (!g_trainer) return; // We are shutting down, do not process any actions
+        if (!g_trainer->HeartbeatActive()) return; // We are shutting down, do not process any actions
 
         if (HIWORD(wParam) != 0) return; // Message was not triggered by the user.
         WORD command = LOWORD(wParam);
