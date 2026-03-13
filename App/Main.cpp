@@ -189,7 +189,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
     // All commands should execute on a background thread, to avoid hanging the UI.
     std::thread t([trainer = g_trainer, wParam, lParam] {
-        void* g_trainer = nullptr; // This thread must hold a local reference to g_trainer, to avoid it being freed while the thread is running.
+#pragma warning(disable: 4101)
+        void* g_trainer; // This thread must hold a local reference to g_trainer, to avoid it being freed while the thread is running.
         SetCurrentThreadName(L"Command Helper");
         if (!trainer || !trainer->HeartbeatActive()) return; // We are shutting down, do not process any actions
 

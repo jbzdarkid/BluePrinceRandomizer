@@ -7,8 +7,6 @@ public:
     void StartHeartbeat(HWND window, UINT message);
     bool HeartbeatActive() const { return _threadActive; }
     void StopHeartbeat() { _threadActive = false; }
-    ProcStatus Heartbeat();
-    void OnGameStart();
     ~Trainer();
 
     enum RngClass : byte {
@@ -47,6 +45,9 @@ public:
     void ForceRoomDraft(const std::wstring& name, int slot);
 
 private:
+    ProcStatus Heartbeat();
+    void OnGameStart();
+
     std::shared_ptr<Memory> _memory;
     bool _threadActive = false;
     std::thread _thread;
