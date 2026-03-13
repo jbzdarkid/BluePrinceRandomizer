@@ -108,20 +108,34 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
     switch (message) {
         case WM_DESTROY:
         {
-            g_trainer->StopHeartbeat();
             std::weak_ptr<Trainer> trainer = g_trainer;
 
-            // Wait to actually quit until all background threads have finished their work.
-            // Note that we do need to pump messages here, since said work may require the message pump,
-            // which we are currently holding hostage.
-            while (trainer.use_count() > 0) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            // Signal to stop all work on background threads (and not start new work)
+            KillTimer(g_hwnd, LOAD_DECKLISTS);
+            g_trainer->StopHeartbeat();
+
+            // Pump messages until (presumably) all threads are done with work
+            while (trainer.use_count() > 1) {
                 MSG msg;
                 if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
                     TranslateMessage(&msg);
                     DispatchMessage(&msg);
                 }
             }
+
+            // Free the (presumed) last reference
+            g_trainer = nullptr;
+
+            // Pump messages until all threads are *actually* done with work.
+            while (trainer.use_count() > 0) {
+                MSG msg;
+                if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessage(&msg);
+                }
+            }
+
+            // Now that the trainer's destructor has finally run, we are safe to tear down the system.
             PostQuitMessage(0);
             return 0;
         }
@@ -142,7 +156,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             static HBRUSH s_solidBrush = CreateSolidBrush(RGB(255, 255, 255));
             return (LRESULT)s_solidBrush;
         case HEARTBEAT:
-            if (!g_trainer->HeartbeatActive()) break; // We are shutting down, do not process any actions
+            if (!g_trainer || !g_trainer->HeartbeatActive()) break; // We are shutting down, do not process any actions
             switch ((ProcStatus)wParam) {
             case ProcStatus::Stopped:
             case ProcStatus::NotRunning:
@@ -174,42 +188,43 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
     }
 
     // All commands should execute on a background thread, to avoid hanging the UI.
-    std::thread t([wParam, lParam] {
+    std::thread t([trainer = g_trainer, wParam, lParam] {
+        void* g_trainer = nullptr; // This thread must hold a local reference to g_trainer, to avoid it being freed while the thread is running.
         SetCurrentThreadName(L"Command Helper");
-        if (!g_trainer->HeartbeatActive()) return; // We are shutting down, do not process any actions
+        if (!trainer || !trainer->HeartbeatActive()) return; // We are shutting down, do not process any actions
 
         if (HIWORD(wParam) != 0) return; // Message was not triggered by the user.
         WORD command = LOWORD(wParam);
         if (command >= SET_SEED_UNKNOWN && command < SET_SEED_UNKNOWN + Trainer::RngClass::NumEntries) {
             Trainer::RngClass rngClass = (Trainer::RngClass)(command - SET_SEED_UNKNOWN);
             __int64 seed = std::stoull(GetWindowString(g_seedInputs[rngClass]));
-            g_trainer->SetSeed(rngClass, seed);
+            trainer->SetSeed(rngClass, seed);
         } else if (command == SET_SEED_ALL) {
             __int64 seed = std::stoull(GetWindowString(g_seedInputs[Trainer::RngClass::NumEntries]));
-            g_trainer->SetAllSeeds(seed);
+            trainer->SetAllSeeds(seed);
             for (HWND hwnd : g_seedInputs) SetStringText(hwnd, std::to_string(seed));
         } else if (command >= SET_BEHAVIOR_UNKNOWN && command < SET_BEHAVIOR_UNKNOWN + Trainer::RngClass::NumEntries) {
             Trainer::RngClass rngClass = (Trainer::RngClass)(command - SET_BEHAVIOR_UNKNOWN);
             std::wstring behavior = GetWindowString(g_behaviorInputs[rngClass]);
-            if (behavior == L"Constant") g_trainer->SetRngBehavior(rngClass, Trainer::RngBehavior::Constant);
-            else if (behavior == L"Increment") g_trainer->SetRngBehavior(rngClass, Trainer::RngBehavior::Increment);
-            else if (behavior == L"Randomize") g_trainer->SetRngBehavior(rngClass, Trainer::RngBehavior::Randomize);
+            if (behavior == L"Constant") trainer->SetRngBehavior(rngClass, Trainer::RngBehavior::Constant);
+            else if (behavior == L"Increment") trainer->SetRngBehavior(rngClass, Trainer::RngBehavior::Increment);
+            else if (behavior == L"Randomize") trainer->SetRngBehavior(rngClass, Trainer::RngBehavior::Randomize);
             else {
                 MessageBoxW(g_hwnd, L"Valid RNG behaviors are:\nConstant, Increment, Randomize", L"Invalid RNG behavior", MB_TASKMODAL | MB_ICONHAND | MB_OK | MB_SETFOREGROUND);
                 return;
             }
         } else if (command == SET_BEHAVIOR_ALL) {
             std::wstring behavior = GetWindowString(g_behaviorInputs[Trainer::RngClass::NumEntries]);
-            if (behavior == L"Constant") g_trainer->SetAllBehaviors(Trainer::RngBehavior::Constant);
-            else if (behavior == L"Increment") g_trainer->SetAllBehaviors(Trainer::RngBehavior::Increment);
-            else if (behavior == L"Randomize") g_trainer->SetAllBehaviors(Trainer::RngBehavior::Randomize);
+            if (behavior == L"Constant") trainer->SetAllBehaviors(Trainer::RngBehavior::Constant);
+            else if (behavior == L"Increment") trainer->SetAllBehaviors(Trainer::RngBehavior::Increment);
+            else if (behavior == L"Randomize") trainer->SetAllBehaviors(Trainer::RngBehavior::Randomize);
             else {
                 MessageBoxW(g_hwnd, L"Valid RNG behaviors are:\nConstant, Increment, Randomize", L"Invalid RNG behavior", MB_TASKMODAL | MB_ICONHAND | MB_OK | MB_SETFOREGROUND);
                 return;
             }
             for (HWND hwnd : g_behaviorInputs) SetStringText(hwnd, behavior);
         } else if (command == LOAD_DECKLISTS) {
-            std::vector<std::vector<std::wstring>> decks = g_trainer->GetDecks();
+            std::vector<std::vector<std::wstring>> decks = trainer->GetDecks();
             int i = 0;
             for (const auto& deck : decks) {
                 std::wstring list;
@@ -231,10 +246,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             if (action == CBN_SELCHANGE) {
                 int selectedIndex = (int)SendMessage((HWND)lParam, (UINT)CB_GETCURSEL, NULL, NULL);
                 if (selectedIndex == 0) {
-                    g_trainer->ForceRoomDraft(L"", slot);
+                    trainer->ForceRoomDraft(L"", slot);
                 } else {
                     const std::wstring internalName = ROOM_NAMES[selectedIndex - 1].second;
-                    g_trainer->ForceRoomDraft(internalName, slot);
+                    trainer->ForceRoomDraft(internalName, slot);
                 }
             }
         }
@@ -410,6 +425,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
     g_bluePrinceProc = std::make_shared<Memory>(L"BLUE PRINCE.exe");
     g_trainer = std::make_shared<Trainer>(g_bluePrinceProc);
+    g_trainer->StartHeartbeat(g_hwnd, HEARTBEAT);
 
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {

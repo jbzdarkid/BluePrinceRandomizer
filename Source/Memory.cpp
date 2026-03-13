@@ -404,7 +404,7 @@ void Memory::Intercept(const std::string& name, __int64 firstLine, __int64 nextL
 
 void Memory::Unintercept(const std::string& name) {
     auto search = std::find_if(_interceptions.begin(), _interceptions.end(), [&name](Interception i) { return i.name == name; });
-    if (search != _interceptions.end()) return;
+    if (search == _interceptions.end()) return;
     Interception interception = *search;
     WriteData<byte>({interception.firstLine}, interception.replacedCode);
     VirtualFreeEx(_handle, (void*)interception.addr, 0, MEM_RELEASE);
