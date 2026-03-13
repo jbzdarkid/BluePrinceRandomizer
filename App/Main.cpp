@@ -161,19 +161,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             case ProcStatus::Stopped:
             case ProcStatus::NotRunning:
                 // Reset the title & launch text but nothing else (trainer manages itself).
-                SetStringText(g_hwnd, WINDOW_TITLE);
+                SetStringText(g_hwnd, L"Waiting for Blue Prince to start...");
+                KillTimer(g_hwnd, LOAD_DECKLISTS);
                 break;
             case ProcStatus::Started:
                 // Process just started, enforce our settings.
-                SetStringText(g_hwnd, L"Attaching to Blue Prince...");
+                SetTimer(g_hwnd, LOAD_DECKLISTS, 1000, (TIMERPROC)NULL); // Reload decklists every second
                 [[fallthrough]];
             case ProcStatus::Reload:
                 // Or, we started a new game / loaded a save, in which case some of the entity data might have been reset. Basically the same.
-                SetStringText(g_hwnd, WINDOW_TITLE);
+                SetStringText(g_hwnd, L"Attaching to Blue Prince...");
                 break;
             case ProcStatus::AlreadyRunning:
                 // Process was already running, and we just started. Load settings from the game.
                 SetStringText(g_hwnd, WINDOW_TITLE);
+                SetTimer(g_hwnd, LOAD_DECKLISTS, 1000, (TIMERPROC)NULL); // Reload decklists every second
                 break;
             case ProcStatus::Running:
                 // Process was already running, and so were we (this recurs every heartbeat). Enforce settings and apply repeated actions.
@@ -194,7 +196,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
         SetCurrentThreadName(L"Command Helper");
         if (!trainer || !trainer->HeartbeatActive()) return; // We are shutting down, do not process any actions
 
-        if (HIWORD(wParam) != 0) return; // Message was not triggered by the user.
         WORD command = LOWORD(wParam);
         if (command >= SET_SEED_UNKNOWN && command < SET_SEED_UNKNOWN + Trainer::RngClass::NumEntries) {
             Trainer::RngClass rngClass = (Trainer::RngClass)(command - SET_SEED_UNKNOWN);
@@ -371,8 +372,6 @@ void CreateComponents() {
             g_hwnd, (HMENU)NULL, g_hInstance, NULL);
     }
     y += 30;
-
-    SetTimer(g_hwnd, LOAD_DECKLISTS, 1000, (TIMERPROC)NULL); // Reload decklists every second
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow) {
