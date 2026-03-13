@@ -424,7 +424,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
     CreateComponents();
 
-    g_bluePrinceProc = std::make_shared<Memory>(L"BLUE PRINCE.exe");
+    g_bluePrinceProc = std::make_shared<Memory>(L"BLUE PRINCE.exe", L"GameAssembly.dll");
     g_trainer = std::make_shared<Trainer>(g_bluePrinceProc);
     g_trainer->StartHeartbeat(g_hwnd, HEARTBEAT);
 
