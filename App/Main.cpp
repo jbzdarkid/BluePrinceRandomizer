@@ -179,6 +179,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 break;
             case ProcStatus::Running:
                 // Process was already running, and so were we (this recurs every heartbeat). Enforce settings and apply repeated actions.
+                SetStringText(g_hwnd, WINDOW_TITLE);
                 break;
             }
             return 0;
