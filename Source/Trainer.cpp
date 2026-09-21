@@ -614,6 +614,7 @@ void Trainer::ForceRoomDraft(const std::wstring& name, int slot) {
 }
 
 void Trainer::HookFsmInt() {
+    // TODO: "48 8B 77 58 48 85 F6 74 64" matches IntAdd_OnEnter, if I need that for something.
     int64_t setIntValue = 0;
     _memory->AddSigScan("48 8B 71 50 48 85 FF 74 62", [&](int64_t offset, int index, const std::vector<uint8_t>& data) {
         setIntValue = offset + index + 4;
