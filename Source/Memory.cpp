@@ -154,15 +154,17 @@ size_t Memory::ExecuteSigScans() {
         if (!ReadProcessMemory(_handle, reinterpret_cast<void*>(i), &buff[0], buff.size(), &numBytesWritten)) continue;
         buff.resize(numBytesWritten);
         for (auto& sigScan : _sigScans) {
-            if (sigScan.found) continue;
-            int index = find(buff, sigScan.bytes);
-            if (index == -1) continue;
-            sigScan.found = sigScan.scanFunc(i, index, buff);
-            if (sigScan.found) notFound--;
+            if (!sigScan.found) {
+                int index = find(buff, sigScan.bytes);
+                if (index == -1) continue;
+                sigScan.found = sigScan.scanFunc(i, index, buff);
+            }
         }
-        if (notFound == 0) break;
     }
 
+    // Recompute because sometimes there are multiple threads scanning (sigh)
+    notFound = 0;
+    for (const auto& sigScan : _sigScans) if (!sigScan.found) notFound++;
     if (notFound > 0) {
         DebugPrint("Failed to find " + std::to_string(notFound) + " sigscans:");
         for (const auto& sigScan : _sigScans) {
