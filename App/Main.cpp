@@ -232,7 +232,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 std::wstring list;
                 for (const std::wstring& card : decks[i]) {
                     if (card[0] == L'<') { // Weirdly, some cards have color labels. Remove them.
-                        assert(card.size() > 23, "Output card had <tags> but was not 23 characters");
+                        if (card.size() <= 23) {
+                            assert(false, "Output card had <tags> but was not 23 characters");
+                            break;
+                        }
                         list += card.substr(15, card.size() - 23) + L'\n';
                     } else {
                         list += card + L'\n';
